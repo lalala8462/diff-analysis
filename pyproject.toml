@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diff-analysis"
+version = "0.1.0"
+description = "Multi-GitLab-MR change impact review, with JDK AST and evidence-backed reporting"
+requires-python = ">=3.9"
+
+[project.scripts]
+diff-analysis = "diff_analysis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["diff_analysis*"]
+
+[tool.setuptools.package-data]
+diff_analysis = ["java/*.java"]

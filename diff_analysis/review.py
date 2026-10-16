@@ -1,0 +1,93 @@
+"""Change impact analysis: old/new method graph, reverse callers, API policy checks."""
+from collections import defaultdict
+from pathlib import Path
+from .gitops import check_sha, diff_files, diff_hunks, files_at
+from .scanner import scan_tree, method_changes, build_graph, callers_of
+
+
+def version_of(root):
+    """Only direct Maven project version: inherited/property versions reported unknown."""
+    pom = Path(root) / 'pom.xml'
+    if not pom.exists():
+        return None
+    try:
+        import xml.etree.ElementTree as ET
+        node = ET.parse(str(pom)).getroot()
+        ns = node.tag.split('}')[0] + '}' if node.tag.startswith('{') else ''
+        version = node.find(ns + 'version')
+        return version.text.strip() if version is not None and version.text else None
+    except Exception:
+        return None
+
+
+def is_api_path(path):
+    p = '/' + path.lower().replace('\\', '/')
+    return p.endswith('api.java') or '/api/' in p
+
+
+def review_repo(repo, project, base, head, workdir, cache):
+    base = check_sha(repo, base)
+    head = check_sha(repo, head)
+    changed_files = diff_files(repo, base, head)
+    old_root, new_root = Path(workdir) / 'base', Path(workdir) / 'head'
+    skipped_old = files_at(repo, base, old_root)
+    skipped_new = files_at(repo, head, new_root)
+    old, old_calls, old_errors = scan_tree(old_root, cache)
+    new, calls, errors = scan_tree(new_root, cache)
+    hunks = {}
+    for f in changed_files:
+        if f['path'].endswith('.java'):
+            hunks[f['path']] = diff_hunks(repo, base, head, f['path'])
+    changed = method_changes(old, new, hunks)
+    old_reverse, old_unresolved = build_graph(old, old_calls)
+    new_reverse, new_unresolved = build_graph(new, calls)
+    combined = defaultdict(set)
+    for src in (old_reverse, new_reverse):
+        for target, upstreams in src.items():
+            combined[target].update(upstreams)
+    impact, limited = callers_of(changed, combined)
+    api_changes = [f for f in changed_files if is_api_path(f['path']) or is_api_path(f['old_path'])]
+    api_issues = []
+    if api_changes:
+        old_v, new_v = version_of(old_root), version_of(new_root)
+        if old_v is None or new_v is None:
+            status = 'UNKNOWN_VERSION'
+        elif old_v == new_v:
+            status = 'NOT_BUMPED'
+        else:
+            status = 'BUMPED'
+        api_issues.append({'paths': [f['path'] for f in api_changes], 'status': status,
+                           'old_version': old_v, 'new_version': new_v})
+    return {'project': project, 'base': base, 'head': head,
+            'changed_files': changed_files, 'changed_methods': sorted(changed),
+            'methods': new, 'old_methods': old, 'calls': calls,
+            'impact_paths': impact, 'unresolved': new_unresolved,
+            'old_unresolved_count': len(old_unresolved), 'api_issues': api_issues,
+            'warnings': [*('old: ' + s for s in skipped_old), *('new: ' + s for s in skipped_new),
+                         *('old parse: ' + x['path'] for x in old_errors),
+                         *('new parse: ' + x['path'] for x in errors)] + (['impact traversal limit reached'] if limited else []),
+            'incomplete': bool(skipped_old or skipped_new or old_errors or errors or limited)}
+
+
+def stitch_cross_project(results):
+    """Find conservative candidate callers in other projects; never claim confirmed call."""
+    by_target = defaultdict(list)
+    for r in results:
+        for symbol in r['changed_methods']:
+            m = r['methods'].get(symbol) or r['old_methods'].get(symbol)
+            if m:
+                by_target[(m['name'], int(m['arity']))].append((r['project'], symbol, m['class']))
+    candidates = []
+    for r in results:
+        for c in r['unresolved']:
+            targets = by_target.get((c['name'], c['arity']), [])
+            for project, symbol, full_class in targets:
+                if project == r['project']:
+                    continue
+                recv_type = c.get('receiver_type', '')
+                if recv_type and recv_type.split('.')[-1] != full_class.split('.')[-1]:
+                    continue
+                candidates.append({'caller_project': r['project'], 'caller': c['owner'],
+                                   'callee_project': project, 'callee': symbol,
+                                   'path': c['path'], 'line': c['line'], 'status': 'CANDIDATE'})
+    return candidates
