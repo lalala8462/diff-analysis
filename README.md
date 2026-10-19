@@ -2,6 +2,27 @@
 
 ## 快速启动（Windows PowerShell 5.1 / 7）
 
+### Windows Java 编译报错处理（2026-10-19）
+
+已根据 Windows 实测日志修复两处问题：JDK 8 的 AST 编译器 API（com.sun.source.*）classpath 缺失，以及 Windows 特殊文件名（例如 hello .java）校验错误。分析器会在 JDK 8 下自动加载 JDK 自带的 lib/tools.jar；如果找不到，会报告 JAVA_HOME/JDK 配置问题。**建议分析工具使用 JDK 17，被分析的 Java 8 业务项目无需升级。**
+
+在 PowerShell 中确认 Java 环境：
+
+    java -version
+    javac -version
+    where.exe java
+    where.exe javac
+    $env:JAVA_HOME
+
+确认安装了完整 JDK 后，更新仓库并重新执行测试：
+
+    git pull origin main
+    .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+如仍报 com.sun.source.*，请按照 [Windows JDK 配置指南](docs/WINDOWS_SETUP.md)检查 JAVA_HOME 和 tools.jar。**GitHub Actions 尚未证明 Windows 实机通过；本次改动以修复实测问题并加入针对性测试为目标。**
+
+
+
 当前 P0 是**命令行静态分析原型**，**无 Web UI、无 AI 自动评审**。Windows 10/11 可原生使用，不要求 WSL/Docker/MySQL。
 
 **准备**：安装 Git for Windows、Python 3.9+（推荐 3.11）和 JDK 8+（推荐 17，必须有 `javac`），并确保终端能执行 `git --version`、`py -3 --version`、`javac -version`。

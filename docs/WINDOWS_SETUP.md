@@ -113,6 +113,42 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
 
 该方式很适合先校验 Java 解析、反向调用图及报告格式，无需 GitLab Token。
 
+## JDK 8 下 AST 扫描器编译失败的处理
+
+如果测试报错类似：
+
+    package com.sun.source.tree does not exist
+    package com.sun.source.util does not exist
+    cannot find symbol: TreePathScanner
+
+说明当前 JDK 编译器 API 没有被正确找到。JDK 8 的相关 API 通常位于完整 JDK 的 lib/tools.jar 中；JRE 目录没有这个文件。
+
+本次已修正：自动判断 javac 版本；使用 JDK 8 时自动把 tools.jar 加入编译与运行 classpath；找不到时输出可操作的错误信息。**推荐让分析工具独立使用 JDK 17，即使被分析项目仍用 Java 8。**
+
+请在 PowerShell 中检查：
+
+    java -version
+    javac -version
+    where.exe java
+    where.exe javac
+    $env:JAVA_HOME
+
+如果必须使用 JDK 8，检查：
+
+    Test-Path "$env:JAVA_HOME\lib\tools.jar"
+
+若返回 False，说明 JAVA_HOME 很可能指向 JRE、JDK 安装不完整或路径配置错误。将 JAVA_HOME 调整到**完整 JDK**目录，再重新打开终端测试。
+
+如果已安装 JDK 17，可仅在当前终端切换（路径请替换成实际安装位置）：
+
+    $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17"
+    $env:Path = "$env:JAVA_HOME\bin;$env:Path"
+    java -version
+    javac -version
+    .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+
+**注**：Windows 的 javac 报错原先还可能出现中文乱码；修正后的编译命令统一按 UTF-8 输出诊断。
+
 ## 6. 故障排查
 
 | 现象 | 检查方式 |
