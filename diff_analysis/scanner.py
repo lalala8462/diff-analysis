@@ -1,5 +1,6 @@
 """JDK javac AST scan; conservative call resolution with explicit unknowns."""
 import json
+import os
 import re
 import shutil
 import subprocess
