@@ -3,9 +3,14 @@ on:
   push:
     branches: [main]
   pull_request:
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,5 +20,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - name: Unit and integration smoke tests
+      - name: Print environment
+        run: |
+          python --version
+          git --version
+          javac -version
+      - name: Unit and Git credential integration smoke tests
         run: python -m unittest discover -s tests -v

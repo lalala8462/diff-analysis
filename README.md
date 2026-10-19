@@ -1,5 +1,50 @@
 # Diff Analysis — 多 GitLab MR 代码变更影响分析与 AI 辅助评审
 
+## 快速启动（Windows PowerShell 5.1 / 7）
+
+当前 P0 是**命令行静态分析原型**，**无 Web UI、无 AI 自动评审**。Windows 10/11 可原生使用，不要求 WSL/Docker/MySQL。
+
+**准备**：安装 Git for Windows、Python 3.9+（推荐 3.11）和 JDK 8+（推荐 17，必须有 `javac`），并确保终端能执行 `git --version`、`py -3 --version`、`javac -version`。
+
+```powershell
+git clone https://github.com/lalala8462/diff-analysis.git
+cd diff-analysis
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+**配置 GitLab Token**：在自建 GitLab 创建对目标项目有 `read_api`、`read_repository` 权限的 Token，不要把 Token 写进代码、Git URL 或命令参数。
+
+```powershell
+$secret = Read-Host "GitLab Token" -AsSecureString
+$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secret)
+try { $env:GITLAB_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+Remove-Variable secret, ptr -ErrorAction SilentlyContinue
+```
+
+**输入多个 MR 并输出报告**（将域名、项目和编号替换为真实值）：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis review-mrs `
+  --allowed-host gitlab.example.cn `
+  --mr "https://gitlab.example.cn/team/spms-back/-/merge_requests/101" `
+  --mr "https://gitlab.example.cn/team/adpts/-/merge_requests/52" `
+  --output ".\report.md" `
+  --json-output ".\review.json"
+Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
+```
+
+成功后查看 `report.md`（人工评审）和 `review.json`（结构化分析）。也可使用 `review-local` 分析本地 Git 仓库两个完整 Commit SHA。
+
+**更详细的 Windows 配置、运行与故障排查： [docs/WINDOWS_SETUP.md](docs/WINDOWS_SETUP.md)**。Linux/macOS 使用示例见 [docs/P0_USAGE.md](docs/P0_USAGE.md)。
+
+**限制**：当前尚未实现 RabbitMQ、Redis、ZK、数据库字段级依赖的完整自动发现，也不会发现所有未纳管项目；静态候选依赖不代表确定遗漏。
+
+---
+
+
 > 状态：方案设计 / 待开发  
 > 文档版本：v1.0（2026-10-16）  
 > 定位：**输入一组自建 GitLab Merge Request，自动分析跨项目代码改动、依赖影响与疑似遗漏，输出有代码证据的人工评审报告。**

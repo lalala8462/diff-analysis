@@ -9,6 +9,24 @@ class GitError(RuntimeError):
     pass
 
 
+_WINDOWS_DEVICE = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$", re.I)
+
+
+def safe_source_path(path, windows=None):
+    """Validate a Git tree path before materializing it on the host OS."""
+    if windows is None:
+        windows = os.name == "nt"
+    if (not path or path.startswith("/") or "\\" in path
+            or any(p in ("", ".", "..", ".git", ".hg") for p in path.split("/"))):
+        return False
+    if windows:
+        for part in path.split("/"):
+            if (part.rstrip(" .") != part or _WINDOWS_DEVICE.fullmatch(part)
+                    or re.search(r'[<>:"|?*\x00-\x1f]', part)):
+                return False
+    return True
+
+
 def git(repo, *args, env=None):
     p = subprocess.run(["git", "-C", str(repo), "--no-pager", *args],
                        capture_output=True, env=env, check=False)
@@ -26,10 +44,7 @@ def check_sha(repo, value):
 
 
 def files_at(repo, sha, root, max_files=12000, max_size=2_000_000):
-    """Export source files from Git objects, no checkout, hooks or filters.
-
-    Only Java and selected metadata are materialized. Reject malicious paths.
-    """
+    """Export source files from Git objects, no checkout, hooks or filters."""
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     files = git(repo, "ls-tree", "-r", "-z", sha).split(b"\0")
@@ -43,11 +58,9 @@ def files_at(repo, sha, root, max_files=12000, max_size=2_000_000):
         mode, typ, blob = metadata.decode().split()
         if typ != "blob" or mode == "120000":
             continue
-        path = raw_path.decode("utf-8", "surrogateescape")
-        parts = Path(path).parts
-        if (not parts or Path(path).is_absolute() or ".." in parts or "\\" in path
-                or any(p in {".git", ".hg"} for p in parts)):
-            skips.append(path)
+        path = raw_path.decode("utf-8", "replace")
+        if not safe_source_path(path):
+            skips.append(path + " (unsupported source path)")
             continue
         if Path(path).suffix.lower() not in allow_ext:
             continue
@@ -58,9 +71,12 @@ def files_at(repo, sha, root, max_files=12000, max_size=2_000_000):
         if len(data) > max_size:
             skips.append(path + " (oversize)")
             continue
-        dest = root.joinpath(*parts)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        dest = root.joinpath(*path.split("/"))
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+        except OSError:
+            skips.append(path + " (cannot materialize source on this OS)")
     return skips
 
 

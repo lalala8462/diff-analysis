@@ -1,13 +1,15 @@
-"""Read GitLab MR metadata with least-privilege API token; clone without token in URL."""
+"""Read GitLab MR metadata; authenticate Git over HTTPS on Windows and POSIX."""
+from contextlib import contextmanager
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit, quote, unquote
 from urllib.request import Request, urlopen
-from .gitops import git, check_sha, GitError
+from .gitops import check_sha, GitError
 
 
 class GitLabError(RuntimeError):
@@ -57,28 +59,76 @@ def get_mr(url, host, token, allow_http=False):
             "target_branch": mr.get("target_branch"), "title": mr.get("title", "")}
 
 
+@contextmanager
+def git_auth_environment(token):
+    """Temporary platform-specific askpass launcher. Token is *only* in child env.
+
+    Do not put the token in repository URLs, git command arguments or helper files.
+    Git for Windows can invoke the .cmd launcher; POSIX uses a /bin/sh launcher.
+    Both delegate the actual response to one UTF-8 Python program.
+    """
+    if not token:
+        raise GitLabError("Empty GitLab token")
+    with tempfile.TemporaryDirectory(prefix="mr-askpass-") as d:
+        directory = Path(d)
+        helper = directory / "askpass.py"
+        helper.write_text(
+            'import os, sys\n'
+            'prompt = " ".join(sys.argv[1:]).lower()\n'
+            'sys.stdout.write("oauth2" if "username" in prompt else '
+            'os.environ["DIFF_ANALYSIS_GIT_TOKEN"])\n',
+            encoding="utf-8")
+        if os.name == "nt":
+            launcher = directory / "askpass.cmd"
+            launcher.write_text(
+                '@echo off\r\n'
+                '"%DIFF_ANALYSIS_PYTHON%" "%~dp0askpass.py" %*\r\n',
+                encoding="ascii")
+        else:
+            launcher = directory / "askpass.sh"
+            launcher.write_text(
+                '#!/bin/sh\n'
+                'exec "$DIFF_ANALYSIS_PYTHON" "$(dirname "$0")/askpass.py" "$@"\n',
+                encoding="ascii")
+            launcher.chmod(0o700)
+        env = os.environ.copy()
+        env.update({
+            "GIT_ASKPASS": str(launcher),
+            "GIT_TERMINAL_PROMPT": "0",
+            "GCM_INTERACTIVE": "never",
+            "GIT_LFS_SKIP_SMUDGE": "1",
+            "DIFF_ANALYSIS_PYTHON": sys.executable,
+            "DIFF_ANALYSIS_GIT_TOKEN": token,
+        })
+        yield env
+
+
 def clone_mr(mr, dest, token):
-    # Never embed token in clone URL or git CLI arguments.
+    # Credentials are never embedded in the clone URL or process arguments.
     url = mr["origin"] + "/" + quote(mr["project"], safe="/-_.~") + ".git"
     dest = Path(dest)
-    with tempfile.TemporaryDirectory(prefix="mr-askpass-") as d:
-        askpass = Path(d) / "askpass.sh"
-        askpass.write_text('#!/bin/sh\ncase "$1" in\n  *Username*) printf "oauth2" ;;\n  *) printf "%s" "$DIFF_ANALYSIS_GIT_TOKEN" ;;\nesac\n')
-        askpass.chmod(0o700)
-        env = os.environ.copy()
-        env.update({"GIT_ASKPASS": str(askpass), "GIT_TERMINAL_PROMPT": "0",
-                    "GIT_LFS_SKIP_SMUDGE": "1", "DIFF_ANALYSIS_GIT_TOKEN": token})
-        p = subprocess.run(["git", "clone", "--quiet", "--no-checkout", "--no-tags", url, str(dest)],
-                           capture_output=True, env=env)
+    with git_auth_environment(token) as env:
+        # Override any machine-level credential helper for this invocation only.
+        # Avoid GCM popup dialogs, persistent token writes or prompting in CI.
+        p = subprocess.run(
+            ["git", "-c", "credential.helper=", "clone", "--quiet",
+             "--no-checkout", "--no-tags", url, str(dest)],
+            capture_output=True, env=env)
         if p.returncode:
-            raise GitLabError("Cannot clone GitLab project " + mr["project"])
+            raise GitLabError(
+                "Cannot clone GitLab project " + mr["project"] +
+                " (check Git for Windows, read_repository permission, TLS and proxy)")
         for sha in (mr["head"], mr["base"]):
             try:
                 check_sha(dest, sha)
             except GitError:
-                p = subprocess.run(["git", "-C", str(dest), "fetch", "--quiet", "--no-tags", "origin", sha],
-                                   capture_output=True, env=env)
+                p = subprocess.run(
+                    ["git", "-c", "credential.helper=", "-C", str(dest),
+                     "fetch", "--quiet", "--no-tags", "origin", sha],
+                    capture_output=True, env=env)
                 if p.returncode:
-                    raise GitLabError("Pinned commit unavailable (fork MR may need source-project access): " + sha[:12])
+                    raise GitLabError(
+                        "Pinned commit unavailable (fork MR may need source-project access): "
+                        + sha[:12])
                 check_sha(dest, sha)
     return dest

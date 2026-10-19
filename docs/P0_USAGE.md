@@ -1,53 +1,50 @@
-# P0 快速运行与实际边界
+# P0 命令行使用说明
 
-本阶段已实现可运行的命令行分析器，不是完整的 AI 自动评审服务。环境依赖：Python 3.9+、Git、JDK 8+（需要 javac）。
+当前版本为**可运行的多 MR 静态分析器**，不是 AI 自动评审服务或 Web UI。依赖 Python 3.9+、Git、JDK 8+（必须包含 javac）。
 
-## 1. 本地代码差异验证
+- **Windows PowerShell 原生运行**：请阅读 [Windows 完整接入指南](WINDOWS_SETUP.md)。
+- Linux/macOS：安装后可使用以下命令。
 
-在仓库根目录执行：
+```bash
+git clone https://github.com/lalala8462/diff-analysis.git
+cd diff-analysis
+python3 -m pip install -e .
+python3 -m unittest discover -s tests -v
+```
 
-    python -m unittest discover -s tests -v
-    python -m diff_analysis review-local \
-      --repo /path/to/java-project \
-      --base <完整基线CommitSHA> \
-      --head <完整目标CommitSHA> \
-      --output report.md --json-output review.json
+## 本地固定 SHA 评审
 
-产生 Markdown 和 JSON；可以对某个未修改的本地项目指定固定 SHA 添加只读静态检查：
+```bash
+python3 -m diff_analysis review-local \
+  --repo /path/to/java-project \
+  --base <完整基线CommitSHA> \
+  --head <完整目标CommitSHA> \
+  --output report.md --json-output review.json
+```
 
-    --catalog /path/to/another-project@<完整CommitSHA>
+可追加 `--catalog /path/to/another-project@<完整CommitSHA>`，只读扫描一个未修改项目以发现跨项目**候选**方法调用。
 
-## 2. 内网自建 GitLab MR
+## 自建 GitLab 多 MR
 
-为避免把私有 GitLab 的账号密码放进 URL 或配置文件：
+```bash
+read -rsp "GitLab Token: " GITLAB_TOKEN; echo
+export GITLAB_TOKEN
+python3 -m diff_analysis review-mrs \
+  --allowed-host gitlab.example.cn \
+  --mr 'https://gitlab.example.cn/team/a/-/merge_requests/123' \
+  --mr 'https://gitlab.example.cn/team/b/-/merge_requests/456' \
+  --output report.md --json-output review.json
+unset GITLAB_TOKEN
+```
 
-    export GITLAB_TOKEN='<具有read_api/read_repository权限的令牌>'
-    python -m diff_analysis review-mrs \
-      --allowed-host gitlab.example.cn \
-      --mr 'https://gitlab.example.cn/team/a/-/merge_requests/123' \
-      --mr 'https://gitlab.example.cn/team/b/-/merge_requests/456' \
-      --output report.md --json-output review.json
+权限需要 `read_api` 与 `read_repository`。源码按 commit SHA 锁定版本读取，不执行待分析仓库的构建或测试脚本。GitLab HTTPS 自签证书需正确安装公司 CA，不应关闭验证；仅隔离内网 HTTP 可明确加 `--allow-http`（不推荐）。
 
-源码获取按 commit SHA 固定版本，不执行仓库构建或测试脚本；无法读取 MR 的 base/head 提交时直接报错，不静默分析当前默认分支。
-内网 GitLab 如果仅支持 HTTP，必须主动设置 --allow-http；不要在不安全网络使用明文 Token。
+**跨平台 Git 私有认证**：Windows 使用临时 `.cmd` askpass，POSIX 使用临时 `.sh` askpass，均交给 Python 读取进程环境中的 Token，不在脚本、URL 或命令参数中明文传 Token。
 
-## 3. 当前实现的能力
+## 当前已实现与未实现
 
-- 多 MR 输入、GitLab MR 元信息解析、固定 base/head SHA 的源码读取及完整 Git Diff。
-- Java 语法 AST 提取类、方法、调用点，分析方法级改动，反向定位上游调用者。
-- 将旧版和新版调用关系合并，避免漏掉已删除的调用边。
-- 检查 API 类变更是否伴随可识别的 Maven 主模块版本变化。
-- 可选输入固定 SHA 的额外仓库，识别跨仓库的潜在调用方。
-- 生成带代码位置的 Markdown/JSON 报告，标记未解析的调用及静态分析局限。
-- 不依赖外部大模型；所有高风险结论保留事实证据和不确定性。
+已实现：多 MR 元数据和源码拉取、完整 Git Diff、Java 方法/调用语法树、旧新调用边合并、反向调用方、API 版本基础检查、固定 SHA catalog、Markdown/JSON 报告。Windows/Linux 路径及 UTF-8 基础适配和跨平台测试。
 
-## 4. 还没有实现（后续开发）
+未实现：真实 MR 多合并树冲突验证、全量 Spring/Dubbo 解析、数据库 SQL 字段级分析、ZooKeeper/RabbitMQ/Redis/ES 动态依赖图谱、长期持久化图谱、AI 业务语义评审、GitLab 评审批注、Web UI。
 
-- [ ] 多 MR 真正临时合并后的候选树冲突/组合验证。
-- [ ] Spring/Dubbo 完整依赖解析、MyBatis SQL 字段和条件级分析。
-- [ ] ZooKeeper、RabbitMQ、Redis、ES 的动态依赖基线采集与反查。
-- [ ] 长期持久化版本图谱、MySQL / Neo4j 管理服务与 Web UI。
-- [ ] AI 按需读取关联代码、总结主要业务行为、验证潜在遗漏。
-- [ ] GitLab 行级评论、自动化测试关联和发布门禁。
-
-特别说明：未知 D 或未输入的项目暂时不会自动发现；跨仓库方法名匹配只能标记为候选关系，不能当作确定调用。部分分析失败必须保留为未知风险。
+静态调用不可证明兼容性；未纳管项目和历史未知依赖不会被自动判定为无影响。

@@ -1,6 +1,5 @@
 """JDK javac AST scan; conservative call resolution with explicit unknowns."""
 import json
-import os
 import re
 import subprocess
 from collections import defaultdict, deque
@@ -17,7 +16,10 @@ def compile_scanner(cache):
     source = Path(__file__).resolve().parent / "java" / "JavaAstScanner.java"
     target = cache / "JavaAstScanner.class"
     if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
-        p = subprocess.run(["javac", "-encoding", "UTF-8", "-source", "8", "-target", "8", "-d", str(cache), str(source)], capture_output=True, text=True)
+        p = subprocess.run(
+            ["javac", "-encoding", "UTF-8", "-source", "8", "-target", "8",
+             "-d", str(cache), str(source)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode:
             raise ScannerError("JDK javac compilation failed: " + p.stderr[:1000])
     return cache
@@ -25,8 +27,11 @@ def compile_scanner(cache):
 
 def scan_tree(root, cache):
     cache = compile_scanner(cache)
-    p = subprocess.run(["java", "-cp", str(cache), "JavaAstScanner", str(root)],
-                       capture_output=True, text=True)
+    # Java 8-17 on Windows may default to the console code page rather than UTF-8.
+    p = subprocess.run(
+        ["java", "-Dfile.encoding=UTF-8", "-cp", str(cache),
+         "JavaAstScanner", str(root)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode:
         raise ScannerError("Java parser failed: " + p.stderr[:1500])
     methods, calls, errors = {}, [], []
