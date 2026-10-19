@@ -49,13 +49,18 @@ def get_mr(url, host, token, allow_http=False):
     refs = mr.get("diff_refs") or {}
     head = refs.get("head_sha") or mr.get("sha")
     base = refs.get("base_sha")
+    start = refs.get("start_sha")
     if not head or not base:
         raise GitLabError("MR does not expose pinned diff_refs head/base; refusing approximate diff")
     for sha in (head, base):
         if not re.fullmatch(r"[0-9a-f]{40,64}", sha, re.I):
             raise GitLabError("Invalid MR commit SHA")
     return {"url": url, "origin": origin, "project": path, "iid": iid,
-            "base": base, "head": head, "source_branch": mr.get("source_branch"),
+            "base": base, "head": head, "start": start,
+            "state": mr.get("state", ""),
+            "merge_commit_sha": mr.get("merge_commit_sha"),
+            "squash_commit_sha": mr.get("squash_commit_sha"),
+            "source_branch": mr.get("source_branch"),
             "target_branch": mr.get("target_branch"), "title": mr.get("title", "")}
 
 
@@ -118,7 +123,9 @@ def clone_mr(mr, dest, token):
             raise GitLabError(
                 "Cannot clone GitLab project " + mr["project"] +
                 " (check Git for Windows, read_repository permission, TLS and proxy)")
-        for sha in (mr["head"], mr["base"]):
+        for sha in (mr["head"], mr["base"], mr.get("start")):
+            if not sha:
+                continue
             try:
                 check_sha(dest, sha)
             except GitError:

@@ -11,6 +11,8 @@ from .gitops import GitError, check_sha, files_at
 from .review import review_repo, stitch_cross_project
 from .report import markdown
 from .scanner import ScannerError, scan_tree, build_graph
+from .catalog import BaselineError
+from . import baseline_cli
 
 
 def catalog_result(repo, sha, root, cache):
@@ -43,11 +45,14 @@ def parser():
         child.add_argument('--output', default='report.md')
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
+    baseline_cli.configure(sub)
     return p
 
 
 def run(args):
     from .review import review_repo
+    if baseline_cli.handle(args):
+        return
     with tempfile.TemporaryDirectory(prefix='diff-analysis-') as tmp:
         root = Path(tmp)
         cache = root / 'javac'
@@ -90,7 +95,7 @@ def run(args):
 def main():
     try:
         run(parser().parse_args())
-    except (ValueError, GitError, GitLabError, ScannerError, OSError) as e:
+    except (ValueError, BaselineError, GitError, GitLabError, ScannerError, OSError) as e:
         print('ERROR: ' + str(e), file=sys.stderr)
         sys.exit(2)
 

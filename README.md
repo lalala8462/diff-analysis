@@ -1,179 +1,132 @@
 # Diff Analysis
 
-**版本递进的多 GitLab MR 影响分析与业务主链交叉点评审**
+**多 GitLab MR 版本影响分析**：从人工维护的项目范围出发，按相邻版本建立源码基线，识别改动和关联程序的待确认影响，逐步发展为业务主链/交叉点可视化与版本回归验证。
 
-> 设计版本：v3.0（2026-10-19）｜当前程序版本：P0 Python 命令行原型。  
-> **v3.0 是已确认的后续实现方案，不代表 Web、SQLite 基线库、资源级分析或 V1/V2 执行器已完成。**
+> 当前实现：**P0 静态分析 CLI + P1-B 首批 SQLite 项目目录与固定 SHA 基线**。  
+> **尚未实现**：Web UI、同仓库多个 MR 的真实合并候选、基线自动晋升、数据库/MQ/Redis 字段级跨服务影响、双版本执行与 AI 业务评审。请勿把候选关系当成已经证明的业务缺陷。
 
-## 1. 产品目标
+## 1. 已实现功能与边界
 
-给定人工维护的**关联项目清单**和一次或多次 GitLab MR，按项目的相邻版本（如 V1.0 → V1.1）维护可追溯源码基线，识别修改内容和潜在跨项目影响，并围绕**变更业务主链与受影响逻辑的交叉点**展示可供人工确认的证据。
-
-不追求第一版自动恢复整个公司的完美业务图谱，不以 AI 自行判断“全部影响已识别”，也不把单次 AI 编程生成的单元测试作为发布正确性的充分证明。
-
-### 四项已确认的设计选择
-
-| 问题 | 确认方案 |
-| --- | --- |
-| 版本基线来源 | **MR 版本递进**：每个项目以本次 MR 目标旧版本 SHA 建首个基线；合入后的真实结果形成下一版本快照 |
-| 扫描哪些项目 | **人工维护完整关联项目清单**；项目新增/移除需要明确登记，不自动猜测未知项目 |
-| 界面与存储 | **Windows 本地 Python API + Web UI + SQLite**；只监听本地地址，后续可迁移多人部署 |
-| 差异分析和测试 | **先静态影响与证据评审**，同时预留业务契约 Schema；后续仅选一条资金场景做隔离 V1/V2 执行 |
-
-## 2. 基线如何递进
-
-以 `spms-back` 的 MR 为例：
-
-~~~text
-首次：MR (source V1.1 → target V1.0)
-  发现 V1.0 尚未建立快照
-      → 锁定 V1.0 目标分支的真实 Commit SHA
-      → 扫描该版本源码，登记基线及覆盖缺口
-      → 从 MR 构造 V1.1 候选状态，与 V1.0 比较
-      → MR 合并完成后核验真实合并结果 SHA
-      → 将合并结果扫描并登记为 V1.1 基线
-
-下次：MR (source V1.2 → target V1.1)
-  定位已保存的 V1.1 快照
-      → 核对目标分支实际 SHA / 图谱缓存与规则版本
-      → 如不一致，阻断或显式进行基线调和
-      → 构造 V1.2 候选，比较 V1.1 → V1.2
-      → 合并成功并验证后，登记 V1.2 基线
-~~~
-
-**版本名不是提交身份**：必须以 SHA/树哈希为真实快照标识；MR 的源分支 HEAD 不自动等于合入目标分支后的结果。多个项目可以各有独立版本号，一次联合评审记录它们各自的 base/candidate SHA。当前流程建立的是 **Git 版本基线**，**不默认等同实际生产部署版本**。
-
-首次无图谱时，对项目清单中的代码从固定版本做全量扫描。后续优先复用 `(project, commit/tree SHA, scanner version, config hash)` 缓存；规则升级或版本偏移触发重扫。没有发现的关联不等于没有依赖。
-
-## 3. 如何表达复杂影响关系
-
-### 不把整张依赖图直接展示给审核者
-
-以变更的**业务主逻辑**作为主轴，只展示与影响结论有关的跨程序交叉点。
-
-~~~text
-【A：支付处理主链】
-支付请求 → 校验 → 支付结果处理 → [交易状态写入 SUCCESS] → 返回成功
-                                  │
-                          [交叉点：MySQL]
-                    trans_record.trans_state
-                                  │
-【B：对账处理主链】             [条件依赖]
-定时任务 → 查询待对账记录 → WHERE trans_state='2' → 对账处理
-                                  ▲
-                          可能遗漏新成功状态
-~~~
-
-上图是**设计示例**，不是凭方法名自动确认的事实。只有在源码、SQL/映射、数据源归属等证据充分时才能把资源关联标成“已验证”；不能确认时显示为虚线/待核实。
-
-若只影响 A 自身，则画**单程序的局部流程图**：入口 → 变更前条件 → 变更后条件 → 受影响分支/副作用/退出，不额外创造无关关联项目。
-
-### 默认展示分类（多层折叠）
-
-| 层 | 归类 | 示例 |
+| 模块 | 已实现 | 当前限制 |
 | --- | --- | --- |
-| L1 | **业务主链/入口** | 支付、退款、通知、对账；HTTP/Dubbo/MQ/XXL-JOB 入口 |
-| L2 | **变化性质** | 决策条件、状态迁移、接口契约、数据读写、消息/缓存、配置 |
-| L3 | **交叉媒介** | 方法调用、Dubbo API、数据库实例.Schema.表.字段、MQ exchange/routing/queue、Redis Key 模式 |
-| L4 | **影响对象** | 当前程序内部逻辑、纳管的其他项目/消费者、未解析对象 |
-| L5 | **证据与状态** | 确定事实、候选关系、需要人工确认、无法解析/不在范围 |
+| 多 MR 评审 | `review-mrs` 获取 GitLab MR、固定 base/head，Java AST 与基础调用方分析 | 各 MR 独立分析，未模拟最终合并树 |
+| 项目目录 | `catalog-add` / `catalog-list`，SQLite 保存人工纳管项目与目录修订号 | 尚无 Web 管理界面；无法自动推断项目清单之外的系统 |
+| 首次旧版本基线 | `baseline-local` 或 `baseline-mr`：从固定旧版本 Commit 提取 Git 文件清单、AST 方法与调用点，记录扫描失败 | 静态方法图不是完整业务依赖图 |
+| MR 候选版本 | `baseline-mr` 记录 MR 的旧目标 SHA、merge-base、源 HEAD SHA/树哈希 | 候选状态为 `SOURCE_HEAD_ONLY`，**不是最终合并版** |
+| 基线复用/核验 | 同项目/版本/SHA/扫描器版本可复用；不同 Git 对象触发 `BASELINE_DIVERGED`；可人工确认无警告的基线 | `VERIFIED` 只代表指定源版本与扫描范围已核验，非完整业务正确性 |
+| 报告 | `review-local` / `review-mrs` 生成 Markdown/JSON | 尚无 Diff/Impact 双台账及主链交叉点 UI |
+| Windows | Python 3.9+、Git for Windows、完整 JDK 8+，可在 PowerShell 运行 | 企业 GitLab 证书、代理、鉴权需在实际网络验证 |
 
-一个主链可能有多个交叉点，一个交叉点也可能关联多个消费者；保留多对多关系，但默认只展开主要 1～3 条证据路径，其余折叠，不通过固定 BFS 深度悄悄删除高风险路径。
+版本规则：MR 从 **V1.1 合并至 V1.0** 时，首次扫描目标旧版本 V1.0 并锁定 Git SHA；源 HEAD 只作为 V1.1 候选。**MR 真正合并后必须读取最终 Git 树并审核，再将其晋升为 V1.1；该晋升逻辑尚未编码。** 后续 V1.2 → V1.1 不得仅凭版本名字跳过 SHA 校验。
 
-## 4. 两张台账，不能混为一谈
+## 2. Windows 安装与启动
 
-### 代码差异覆盖台账（Diff Coverage Ledger）
-
-从 Git 完整文件/Hunk 列表起算，**每一个改动必须有处理去向**：
-
-- `SEMANTIC_MAPPED`：已映射 Java/SQL/配置等具体语义变化。
-- `NON_BEHAVIORAL`：有证据可判定为注释/文档等变化。
-- `UNSUPPORTED`：不支持的文件/语义类型。
-- `PARSE_FAILED`：解析失败或扫描被截断。
-- `NEEDS_REVIEW`：可能改变行为但尚未分类。
-
-它回答：“**本次代码变更有没有被处理/记录**？”不能回答“业务影响是否全发现”。
-
-### 影响路径证据台账（Impact Trace Ledger）
-
-为每个变化点记录：
-
-`change_id → logic_spine → observable_effect / interface → crossing_resource → consumer_logic → finding`。
-
-每段关联必须保存：项目版本/SHA、方法或 SQL 位置、边类型、证据来源、置信级别、断点原因。某段识别不了就停在**证据断点**并列为人工检查项，不允许 AI 虚构调用边。
-
-**优先控制项目范围与证据清晰度**：不将“漏报率长期统计”作为本阶段交付门槛。先完整登记用户提供的项目清单、每个项目的扫描/未扫描状态；以后用历史缺陷和人工反馈测量召回率与误报率。
-
-## 5. 本地 Web 界面（拟开发）
-
-推荐信息架构：
-
-1. **项目清单**：人工录入 GitLab 项目、版本命名规则、默认扫描配置、关键资源别名与审核负责人；显式标记纳管完整性。
-2. **版本与 MR**：每项目版本谱系（V1.0、V1.1…）、目标基线、MR 状态、真实候选/合并 SHA、是否可提升为新基线。
-3. **变更覆盖**：Git Diff → 语义变化 → 处理状态，按项目、业务逻辑、变化类别汇总；未知项一键进入待确认。
-4. **业务主链影响图**：左侧 A 主流程，中间资源交叉点，右侧 B 主流程；同项目则展示局部分支。点击节点显示代码/SQL/配置证据，支持同一交叉点下多个消费者折叠。
-5. **风险与确认**：候选遗漏、证据断点、人工确认、业务行为契约草案和待回归场景；以后接入差异执行记录。
-
-图谱存储和 UI 视图是两回事：底层允许复杂的有向多重关系，前端通过**与变更相关的子图抽取/分组**渲染，不直接显示全公司成千上万个节点。
-
-本地技术建议：`FastAPI`（接口）、`SQLite`（元数据、版本快照、证据/确认记录）、`Cytoscape.js`（可折叠关系图）、简单静态 HTML/JS 前端。作为**方案建议**，可按实际部署和离线依赖条件调整。默认 `127.0.0.1`，Token 仅存运行进程的环境变量，不存入数据库。
-
-## 6. 开发顺序（已按本次选择重排）
-
-| 阶段 | 重点交付 | 状态 |
-| --- | --- | --- |
-| P0-S | 当前 CLI、Windows、真实 GitLab MR 分析链路及错误报告 | 基础功能已实现，真实 MR 验证待补 |
-| **P1-B** | 人工项目清单、相邻 MR 版本谱系、首次基线扫描/缓存/晋升 | 待开发 |
-| **P2-L** | Diff Coverage Ledger、语义改动分类、业务主链提取 | 待开发 |
-| **P3-X** | 跨程序交叉点规则、证据断点、分层影响路径；从 Java → Dubbo/SQL/MQ/Redis 逐步扩展 | 待开发 |
-| **P4-U** | Windows 本地 Web + SQLite、主链交叉点视图、人工确认 | 待开发（可提前做只读最小界面） |
-| **P5-C** | 场景/业务契约 Schema、受影响场景推荐和人工批准 | 待开发 |
-| **P6-E** | **仅一条**资金业务的隔离 V1/V2 返回/DB/渠道意图比较 | 待开发 |
-| P7-A | AI 证据化业务评审、长期评测和扩展部署 | 后续 |
-
-第一阶段**不要求 AI 发现隐藏的所有业务依赖**。实际代码中的资源读写与影响交叉点应由证据驱动，不能因为某个项目未提交 MR 就假设需要修改。
-
-分步工作包、验收样例和阶段边界见：
-
-- [v3 技术设计：版本基线、双台账、主链交叉点](docs/ARCHITECTURE_V3.md)
-- [v3 开发计划和验收标准](docs/DEVELOPMENT_PLAN_V3.md)
-- [Windows 安装 / GitLab 接入](docs/WINDOWS_SETUP.md)
-- [当前 P0 CLI 功能与命令](docs/P0_USAGE.md)
-
-旧 [v2 架构](docs/ARCHITECTURE_V2.md) 和 [v2 开发路线](docs/DEVELOPMENT_PLAN_V2.md) 保留作讨论历史；**发生冲突时以 v3 为准**。
-
-## 7. 当前已经支持的运行方式
-
-仓库目前仍是命令行工具，**没有可运行的本地 Web UI / SQLite 基线管理服务**。
-
-Windows PowerShell：
+Windows PowerShell 5.1/7：
 
 ~~~powershell
 git clone https://github.com/lalala8462/diff-analysis.git
 cd diff-analysis
+
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m diff_analysis --help
 ~~~
 
-配置有 `read_api`、`read_repository` 权限的 GitLab Token（安全输入方式参见 Windows 文档），然后：
+需要 Git for Windows、Python 3.9+、完整 JDK 8+（含 `javac`，建议独立用 JDK 17 运行分析器）。当前无需安装 MySQL、Redis、Docker；SQLite 随 Python 标准库提供。
+
+## 3. 使用 P1-B 新增基线功能
+
+### 3.1 建立人工项目清单
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/spms-back --owner payment
+.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/refund-service --owner payment
+.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/reconciliation-job --owner finance
+
+.\.venv\Scripts\python.exe -m diff_analysis catalog-list
+~~~
+
+项目必须先纳入清单才能建基线。命令默认使用当前目录的 `.diff-analysis/state.sqlite3`，已被 `.gitignore` 排除。`catalog-list` 会显示登记但没有快照的项目，不把它们从扫描范围统计中隐藏。
+
+### 3.2 不连接 GitLab：用本地仓库验证固定版本
+
+~~~powershell
+$baseSha = git -C "G:\Code\spms-back" rev-parse V1.0
+
+.\.venv\Scripts\python.exe -m diff_analysis baseline-local `
+  --project rhf/spms-back `
+  --version V1.0 `
+  --repo "G:\Code\spms-back" `
+  --sha $baseSha
+
+.\.venv\Scripts\python.exe -m diff_analysis baseline-status
+~~~
+
+如果本地没有名为 `V1.0` 的分支/标签，可使用从 GitLab 获取的完整旧版本 Commit SHA。注意本阶段**不会自动以 main/master 作为旧版本**。
+
+### 3.3 使用未合并 GitLab MR 建首次基线
+
+Token 需有 `read_api` 和 `read_repository` 权限。不要写入脚本、Git URL 或 SQLite。PowerShell 安全输入方式见 [Windows 接入指南](docs/WINDOWS_SETUP.md)。
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis baseline-mr `
+  --allowed-host gitlab.example.cn `
+  --mr "https://gitlab.example.cn/rhf/spms-back/-/merge_requests/101" `
+  --old-version V1.0 `
+  --new-version V1.1
+
+.\.venv\Scripts\python.exe -m diff_analysis baseline-status
+~~~
+
+执行逻辑：读取 MR 的 `diff_refs.start_sha`（旧目标版本）和 `head_sha`；再次请求目标分支当前 SHA，**不一致就报 `TARGET_MOVED`**，不使用悄悄漂移的分支基线；克隆真实 Git 对象并对 V1.0 扫描；最后记录 V1.1 的 `SOURCE_HEAD_ONLY` 候选。已合并 MR 不支持用当前目标分支倒推原来的 V1.0，必须用精确旧 Commit 处理。
+
+基线没有扫描警告且人工核对旧版本 SHA/项目范围后，可显式确认：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis baseline-verify `
+  --project rhf/spms-back `
+  --version V1.0 `
+  --acknowledge
+~~~
+
+**该确认不代表已经识别全部业务依赖**；无法解析的动态调用和未纳管资源仍需后续阶段处理。
+
+如果要使用另一个数据库文件，可以给每条新命令添加 `--db "G:\diff-analysis-data\state.sqlite3"`。数据库文件不要提交到 Git 仓库。
+
+## 4. 原有 P0 代码评审保持可用
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m diff_analysis review-mrs `
   --allowed-host gitlab.example.cn `
-  --mr "https://gitlab.example.cn/team/spms-back/-/merge_requests/101" `
-  --mr "https://gitlab.example.cn/team/refund-service/-/merge_requests/52" `
-  --output ".\report.md" `
-  --json-output ".\review.json"
+  --mr "https://gitlab.example.cn/rhf/spms-back/-/merge_requests/101" `
+  --mr "https://gitlab.example.cn/rhf/refund-service/-/merge_requests/52" `
+  --output report.md `
+  --json-output review.json
 ~~~
 
-当前 CLI 提供的是方法级静态分析与候选关联，**不会自动进行 v3 的项目清单管理、相邻版本晋升、跨资源证据验证、交叉点界面或 V1/V2 执行**。
+此命令与新增的基线命令**目前仍然是独立路径**：P0 生成方法级评审报告；P1-B 建立带版本的源码/分析快照。后续的 Diff Coverage Ledger、跨程序业务主链关联会复用这两类数据。
 
-## 8. 不变的安全与质量原则
+## 5. 下一阶段路线
 
-- 对 MR 的 HEAD、目标基线、候选合并结果分别固定真实 Git SHA；不能按版本标签推断具体代码。
-- 纳管项目清单由用户维护：全项目扫描成功也只证明“在该清单和扫描规则范围内”的覆盖。
-- 所有未解析、权限不足、动态依赖断点留在报告；不能用 100% Hunk 覆盖冒充业务无遗漏。
-- 支付/退款资金链路的未知影响不得自动通过。
-- 后续执行器必须有独立测试环境，外部银行渠道由批准的测试替身模拟；不连真实支付/退款渠道。
-- 业务契约的预期来自需求/人工批准，不让 AI 直接从刚写的实现生成“正确答案”。
+| 阶段 | 任务 | 状态 |
+| --- | --- | --- |
+| P0-S | Windows 本地测试、GitLab MR 读取与基本 Java 静态分析 | 已有基础实现，企业实测仍需确认 |
+| **P1-B01~B03** | 人工项目目录、SQLite、首次固定旧版本基线、MR source HEAD 候选 | **已实现首批** |
+| **P1-B04~B10** | 全纳管项目版本快照、最终合并结果验证与晋升、跨项目版本批次、扫描缓存与 API | 待开发 |
+| P2-L | 每个 Git Diff Hunk 处理记录 + A 项目主逻辑 | 待开发 |
+| P3-X | 跨项目交叉媒介和证据断点：Java → Dubbo/SQL/MQ/Redis | 待开发 |
+| P4-U | Python + SQLite + 本地 Web，按 A 主链/交叉点/B 主链分层展示 | 待开发 |
+| P5-C | 长期业务场景库、NEW/CHANGED/UNCHANGED/UNKNOWN 契约 | 待开发 |
+| P6-E | 一条隔离资金业务的 V1/V2 可观察行为差异验证 | 待开发 |
+
+**质量原则**：项目全集由用户维护，扫描失败和未知项必须显示；代码差异处理完整不等于业务影响已全部发现；所有依赖/业务结论都应有可核验的证据，不可让 AI 按猜测生成确定调用边。
+
+## 6. 文档
+
+- [Windows 安装、GitLab Token、JDK 8/17 排障](docs/WINDOWS_SETUP.md)
+- [现有 P0 命令行使用及能力边界](docs/P0_USAGE.md)
+- [v3 完整架构：版本基线、双台账、主链交叉点](docs/ARCHITECTURE_V3.md)
+- [v3 分阶段开发与验收标准](docs/DEVELOPMENT_PLAN_V3.md)
+
+旧 v2 文件仅存档，不作为当前实施依据。
