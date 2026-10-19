@@ -1,6 +1,7 @@
 """JDK javac AST scan; conservative call resolution with explicit unknowns."""
 import json
 import re
+import shutil
 import subprocess
 from collections import defaultdict, deque
 from pathlib import Path
@@ -10,26 +11,80 @@ class ScannerError(RuntimeError):
     pass
 
 
-def compile_scanner(cache):
+def _java_executable(name):
+    """Use the same JDK for javac and java; prefer JAVA_HOME when valid."""
+    home = os.environ.get("JAVA_HOME")
+    if home:
+        executable = Path(home) / "bin" / (name + (".exe" if os.name == "nt" else ""))
+        if executable.is_file():
+            return str(executable)
+    return shutil.which(name) or name
+
+
+def _tools_jar(javac_path):
+    """Find JDK 8 compiler API, not on the user classpath by default."""
+    candidates = []
+    if os.environ.get("JAVA_HOME"):
+        candidates.append(Path(os.environ["JAVA_HOME"]) / "lib" / "tools.jar")
+    resolved = shutil.which(javac_path) or javac_path
+    if Path(resolved).is_file():
+        candidates.append(Path(resolved).resolve().parent.parent / "lib" / "tools.jar")
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def java_toolchain():
+    """Resolve matching Java commands and JDK 8's optional compiler jar."""
+    javac = _java_executable("javac")
+    java = _java_executable("java")
+    try:
+        p = subprocess.run([javac, "-version"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise ScannerError("Cannot run javac; install JDK 17 and verify JAVA_HOME/PATH") from exc
+    version = (p.stdout + " " + p.stderr).strip()
+    match = re.search(r"\bjavac\s+(\d+)(?:\.(\d+))?", version)
+    if p.returncode or not match:
+        raise ScannerError("Unable to identify javac version: " + version[:200])
+    major = int(match.group(2)) if match.group(1) == "1" else int(match.group(1))
+    if major < 8:
+        raise ScannerError("Java 8+ is required; JDK 17 is recommended")
+    tools = _tools_jar(javac) if major == 8 else None
+    if major == 8 and tools is None:
+        raise ScannerError(
+            "JDK 8 javac detected, but lib/tools.jar was not found. "
+            "Set JAVA_HOME to the full JDK 8 installation (not a JRE), "
+            "or install/use JDK 17 and put its bin directory first on PATH.")
+    return javac, java, tools
+
+
+def compile_scanner(cache, toolchain=None):
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parent / "java" / "JavaAstScanner.java"
     target = cache / "JavaAstScanner.class"
+    javac, _, tools = toolchain or java_toolchain()
     if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
-        p = subprocess.run(
-            ["javac", "-encoding", "UTF-8", "-source", "8", "-target", "8",
-             "-d", str(cache), str(source)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        command = [javac, "-J-Dfile.encoding=UTF-8", "-encoding", "UTF-8",
+                   "-source", "8", "-target", "8"]
+        if tools is not None:
+            command += ["-classpath", str(tools)]
+        command += ["-d", str(cache), str(source)]
+        p = subprocess.run(command, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
         if p.returncode:
-            raise ScannerError("JDK javac compilation failed: " + p.stderr[:1000])
+            raise ScannerError(
+                "JDK javac compilation failed (" + str(javac) + "): " +
+                p.stderr[:1400] + "\nTry JDK 17; run java -version and javac -version.")
     return cache
 
 
 def scan_tree(root, cache):
-    cache = compile_scanner(cache)
-    # Java 8-17 on Windows may default to the console code page rather than UTF-8.
+    toolchain = java_toolchain()
+    cache = compile_scanner(cache, toolchain)
+    _, java, tools = toolchain
+    runtime_cp = str(cache) + (os.pathsep + str(tools) if tools else "")
     p = subprocess.run(
-        ["java", "-Dfile.encoding=UTF-8", "-cp", str(cache),
+        [java, "-Dfile.encoding=UTF-8", "-cp", runtime_cp,
          "JavaAstScanner", str(root)],
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode:

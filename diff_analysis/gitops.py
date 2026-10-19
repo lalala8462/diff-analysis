@@ -21,7 +21,8 @@ def safe_source_path(path, windows=None):
         return False
     if windows:
         for part in path.split("/"):
-            if (part.rstrip(" .") != part or _WINDOWS_DEVICE.fullmatch(part)
+            if (part.rstrip(" .") != part or any(not token or token.endswith(" ")
+                    for token in part.split(".")) or _WINDOWS_DEVICE.fullmatch(part)
                     or re.search(r'[<>:"|?*\x00-\x1f]', part)):
                 return False
     return True

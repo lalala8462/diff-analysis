@@ -54,5 +54,44 @@ class WindowsPathTests(unittest.TestCase):
             self.assertIn("demo.订单#查询()", methods)
 
 
+
+class JDK8ToolchainTests(unittest.TestCase):
+    def test_tools_jar_detected_for_jdk8(self):
+        from unittest.mock import patch
+        from diff_analysis.scanner import java_toolchain
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "bin").mkdir()
+            (home / "lib").mkdir()
+            ext = ".exe" if os.name == "nt" else ""
+            (home / "bin" / ("javac" + ext)).touch()
+            (home / "bin" / ("java" + ext)).touch()
+            jar = home / "lib" / "tools.jar"
+            jar.touch()
+            version = subprocess.CompletedProcess(
+                ["javac", "-version"], 0, "javac 1.8.0_432", "")
+            with patch.dict(os.environ, {"JAVA_HOME": str(home)}):
+                with patch("diff_analysis.scanner.subprocess.run", return_value=version):
+                    javac, java, tools = java_toolchain()
+            self.assertEqual(jar, tools)
+            self.assertEqual(home / "bin" / ("javac" + ext), Path(javac))
+            self.assertEqual(home / "bin" / ("java" + ext), Path(java))
+
+    def test_missing_tools_jar_reports_jdk_17_alternative(self):
+        from unittest.mock import patch
+        from diff_analysis.scanner import java_toolchain, ScannerError
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            (home / "bin").mkdir()
+            ext = ".exe" if os.name == "nt" else ""
+            (home / "bin" / ("javac" + ext)).touch()
+            (home / "bin" / ("java" + ext)).touch()
+            version = subprocess.CompletedProcess(
+                ["javac", "-version"], 0, "javac 1.8.0_432", "")
+            with patch.dict(os.environ, {"JAVA_HOME": str(home)}):
+                with patch("diff_analysis.scanner.subprocess.run", return_value=version):
+                    with self.assertRaisesRegex(ScannerError, r"lib/tools.jar"):
+                        java_toolchain()
+
 if __name__ == "__main__":
     unittest.main()
