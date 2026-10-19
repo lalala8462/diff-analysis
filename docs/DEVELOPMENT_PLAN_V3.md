@@ -45,11 +45,14 @@ P7-A AI 证据评审/更广的动态依赖和多用户部署
 
 ## P1-B 项目清单及相邻版本基线（最高优先级）
 
+**实际开发状态（2026-10-19）：已开始。** 已提交 SQLite 项目目录、固定 SHA 基线扫描、MR source HEAD 候选记录及 6 个 CLI 命令。**暂未实现自动合并晋升、扫描整个项目清单、Web 或完整 API。** GitHub CI 的任务仍在测试步骤执行前失败，新增代码需要 Windows 本机复测。
+
+
 ### 工作包
 
-- [ ] B01：SQLite 初始化/迁移；项目目录表及 catalog_revision，录入 GitLab project URL、纳管状态、版本规则、扫描配置、负责人。
-- [ ] B02：GitLab 项目/MR 列表和 URL 解析统一：source/target/version label、MR base/head、target tip、merge SHA 都分别记录。
-- [ ] B03：基线发现器：`MR(V1.1→V1.0)` 时，若 `project@V1.0` 无快照，则固定**旧目标分支 Commit/树**生成首次源码清单；不要求已有业务图。
+- [ ] B01：SQLite 初始化与项目目录、catalog_revision、owner **已实现基础数据模型及添加/查看命令**；停用/删除、版本规则及扫描配置仍待开发。
+- [ ] B02：**已支持**读取 MR base/head/start、source/target、state 并验证当前 target SHA；完整项目/MR 列表及最终 merge SHA 持久化仍待开发。
+- [x] B03：首次 `MR(V1.1→V1.0)` 从经过 target tip 校验的 `diff_refs.start_sha` 建立 V1.0 固定版本源码清单/AST 快照、扫描缺口，并记录 V1.1 source HEAD 候选（非最终合并树）。
 - [ ] B04：对人工 catalog 全项目生成版本绑定快照；没有版本映射、权限不足、拉取失败时保存显式状态 `VERSION_UNKNOWN` / `UNREACHABLE`。
 - [ ] B05：完成 `BASELINE_PROVISIONAL`、`VERIFIED`、`CANDIDATE_ANALYZED`、`MERGED_UNVERIFIED`、`PROMOTED`、`DIVERGED` 状态机及审核日志。
 - [ ] B06：合并事件/人工触发后读取实际 GitLab final commit/tree；检查候选与最终代码的偏差，成功后晋升为下一版本基线。
