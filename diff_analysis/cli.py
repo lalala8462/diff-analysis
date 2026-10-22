@@ -13,6 +13,7 @@ from .report import markdown
 from .scanner import ScannerError, scan_tree, build_graph
 from .catalog import BaselineError
 from . import baseline_cli
+from . import wizard
 
 
 def catalog_result(repo, sha, root, cache):
@@ -45,12 +46,19 @@ def parser():
         child.add_argument('--output', default='report.md')
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
+    interactive = sub.add_parser('wizard', help='Interactive multi-project Git revision comparison (CMD/PowerShell)')
+    interactive.add_argument('--db', default='.diff-analysis/state.sqlite3')
+    interactive.add_argument('--output', default='report.md')
+    interactive.add_argument('--json-output', default='review.json')
     baseline_cli.configure(sub)
     return p
 
 
 def run(args):
     from .review import review_repo
+    if args.command == 'wizard':
+        wizard.run_wizard(args)
+        return
     if baseline_cli.handle(args):
         return
     with tempfile.TemporaryDirectory(prefix='diff-analysis-') as tmp:

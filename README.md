@@ -1,132 +1,117 @@
 # Diff Analysis
 
-**多 GitLab MR 版本影响分析**：从人工维护的项目范围出发，按相邻版本建立源码基线，识别改动和关联程序的待确认影响，逐步发展为业务主链/交叉点可视化与版本回归验证。
+**Windows 上的多项目 Git 版本差异与关联影响分析工具。** 支持分步输入多个项目、各自旧/新 Git 修订号，一次生成 Markdown + JSON 评审报告，并用 SQLite 保存固定 SHA 的旧版扫描基线。
 
-> 当前实现：**P0 静态分析 CLI + P1-B 首批 SQLite 项目目录与固定 SHA 基线**。  
-> **尚未实现**：Web UI、同仓库多个 MR 的真实合并候选、基线自动晋升、数据库/MQ/Redis 字段级跨服务影响、双版本执行与 AI 业务评审。请勿把候选关系当成已经证明的业务缺陷。
+> 当前状态：**交互式命令行 + P0 Java AST 静态影响分析 + P1-B SQLite 基线**。尚无本地 Web UI、完整数据库/MQ/Redis 跨服务依赖图、MR 最终合并自动晋升或 V1/V2 业务执行器。跨项目调用只输出待确认候选，不能当作业务影响已得到证明。
 
-## 1. 已实现功能与边界
+## 1. 安装与启动（Windows CMD / PowerShell）
 
-| 模块 | 已实现 | 当前限制 |
-| --- | --- | --- |
-| 多 MR 评审 | `review-mrs` 获取 GitLab MR、固定 base/head，Java AST 与基础调用方分析 | 各 MR 独立分析，未模拟最终合并树 |
-| 项目目录 | `catalog-add` / `catalog-list`，SQLite 保存人工纳管项目与目录修订号 | 尚无 Web 管理界面；无法自动推断项目清单之外的系统 |
-| 首次旧版本基线 | `baseline-local` 或 `baseline-mr`：从固定旧版本 Commit 提取 Git 文件清单、AST 方法与调用点，记录扫描失败 | 静态方法图不是完整业务依赖图 |
-| MR 候选版本 | `baseline-mr` 记录 MR 的旧目标 SHA、merge-base、源 HEAD SHA/树哈希 | 候选状态为 `SOURCE_HEAD_ONLY`，**不是最终合并版** |
-| 基线复用/核验 | 同项目/版本/SHA/扫描器版本可复用；不同 Git 对象触发 `BASELINE_DIVERGED`；可人工确认无警告的基线 | `VERIFIED` 只代表指定源版本与扫描范围已核验，非完整业务正确性 |
-| 报告 | `review-local` / `review-mrs` 生成 Markdown/JSON | 尚无 Diff/Impact 双台账及主链交叉点 UI |
-| Windows | Python 3.9+、Git for Windows、完整 JDK 8+，可在 PowerShell 运行 | 企业 GitLab 证书、代理、鉴权需在实际网络验证 |
-
-版本规则：MR 从 **V1.1 合并至 V1.0** 时，首次扫描目标旧版本 V1.0 并锁定 Git SHA；源 HEAD 只作为 V1.1 候选。**MR 真正合并后必须读取最终 Git 树并审核，再将其晋升为 V1.1；该晋升逻辑尚未编码。** 后续 V1.2 → V1.1 不得仅凭版本名字跳过 SHA 校验。
-
-## 2. Windows 安装与启动
-
-Windows PowerShell 5.1/7：
+依赖：Git for Windows、Python 3.9+、完整 JDK 8+（必须有 `javac`）。首次安装：
 
 ~~~powershell
 git clone https://github.com/lalala8462/diff-analysis.git
 cd diff-analysis
-
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe -m diff_analysis --help
 ~~~
 
-需要 Git for Windows、Python 3.9+、完整 JDK 8+（含 `javac`，建议独立用 JDK 17 运行分析器）。当前无需安装 MySQL、Redis、Docker；SQLite 随 Python 标准库提供。
-
-## 3. 使用 P1-B 新增基线功能
-
-### 3.1 建立人工项目清单
+**推荐交互式运行：**
 
 ~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/spms-back --owner payment
-.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/refund-service --owner payment
-.\.venv\Scripts\python.exe -m diff_analysis catalog-add --project rhf/reconciliation-job --owner finance
-
-.\.venv\Scripts\python.exe -m diff_analysis catalog-list
+.\.venv\Scripts\python.exe -m diff_analysis wizard
 ~~~
 
-项目必须先纳入清单才能建基线。命令默认使用当前目录的 `.diff-analysis/state.sqlite3`，已被 `.gitignore` 排除。`catalog-list` 会显示登记但没有快照的项目，不把它们从扫描范围统计中隐藏。
+也可以在 Windows 资源管理器中**双击 [start-wizard.cmd](start-wizard.cmd)**；脚本会打开 CMD 控制台调用相同的交互程序，执行完不会立即关闭窗口。已有 CMD/PowerShell 窗口可直接输入 `start-wizard.cmd`。
 
-### 3.2 不连接 GitLab：用本地仓库验证固定版本
+### 交互示例：不同项目使用不同修订号
 
-~~~powershell
-$baseSha = git -C "G:\Code\spms-back" rev-parse V1.0
+~~~text
+=== diff-analysis 多项目版本比较向导 ===
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 1
+本地 Git 项目路径: G:\Code\spms-back
+项目标识（例如 rhf/spms-back）: rhf/spms-back
+旧版 Git 修订号: V1.0
+新版 Git 修订号: V1.1
+旧版本标签: [回车沿用 V1.0]
+新版本标签: [回车沿用 V1.1]
+项目责任人/团队备注（可选，无权限含义）: [回车跳过]
 
-.\.venv\Scripts\python.exe -m diff_analysis baseline-local `
-  --project rhf/spms-back `
-  --version V1.0 `
-  --repo "G:\Code\spms-back" `
-  --sha $baseSha
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 1
+本地 Git 项目路径: G:\Code\refund-service
+项目标识: rhf/refund-service
+旧版 Git 修订号: release/2.5
+新版 Git 修订号: release/2.6
+旧版本标签: V2.5
+新版本标签: V2.6
+项目责任人/团队备注: [回车跳过]
 
-.\.venv\Scripts\python.exe -m diff_analysis baseline-status
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 0
+--- 比较清单 ---
+1. rhf/spms-back: V1.0 (<旧版 SHA>) → V1.1 (<新版 SHA>)
+2. rhf/refund-service: V2.5 (<旧版 SHA>) → V2.6 (<新版 SHA>)
+确认开始扫描并生成报告？y/N: y
 ~~~
 
-如果本地没有名为 `V1.0` 的分支/标签，可使用从 GitLab 获取的完整旧版本 Commit SHA。注意本阶段**不会自动以 main/master 作为旧版本**。
+每个项目的**旧/新修订号可独立输入**：支持 Git 分支名、Tag、完整 Commit SHA、`HEAD~1` 等 Git 修订表达式。程序执行前会把它们分别解析为不可变的完整 SHA；旧/新 SHA 相同会提示重新输入。未完成输入或选择否时不会创建项目目录或报告。
 
-### 3.3 使用未合并 GitLab MR 建首次基线
+扫描后生成：
+- `report.md`：各项目版本、修改文件与方法、静态调用链、跨项目候选和未知范围。
+- `review.json`：含每项目旧/新完整 SHA、版本标签、代码证据和候选关系。
+- `.diff-analysis/state.sqlite3`：人工项目清单、旧版本固定 SHA 基线和扫描缺口。
 
-Token 需有 `read_api` 和 `read_repository` 权限。不要写入脚本、Git URL 或 SQLite。PowerShell 安全输入方式见 [Windows 接入指南](docs/WINDOWS_SETUP.md)。
+默认将旧版本登记为 `PROVISIONAL`（待核验）；**不会因为比较完成就把新版自动晋升为已合并基线**。重新执行同旧版本/同 SHA 可复用基线；同一个版本名指向不同代码会被拒绝，提示 `BASELINE_DIVERGED`。
 
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis baseline-mr `
-  --allowed-host gitlab.example.cn `
-  --mr "https://gitlab.example.cn/rhf/spms-back/-/merge_requests/101" `
-  --old-version V1.0 `
-  --new-version V1.1
+### GitLab MR 模式
 
-.\.venv\Scripts\python.exe -m diff_analysis baseline-status
+若选择 `2=GitLab MR`，向导将逐项要求 MR 地址、GitLab 主机名、旧/新版本标签，自动解析未合并 MR 的目标旧版 SHA 和源分支候选 SHA，不必手工输入 Git SHA。允许与本地项目在同一批次比较。
+
+运行前先在当前终端设置 `GITLAB_TOKEN`（权限：`read_api`、`read_repository`）。**推荐使用 [Windows 指南](docs/WINDOWS_SETUP.md)中的安全输入方式**，不把 Token 写入代码、命令参数、SQLite 或报告。MR 必须尚未合并，且目标分支未相对 MR 记录漂移；发生 `TARGET_MOVED` 时需要刷新后再分析。源分支 HEAD **不是**最终合并版本。
+
+### CMD 使用与参数
+
+~~~cmd
+.venv\Scripts\python.exe -m diff_analysis wizard
+.venv\Scripts\python.exe -m diff_analysis wizard --db "G:\diff-analysis-data\state.sqlite3" --output "G:\reports\report.md" --json-output "G:\reports\review.json"
 ~~~
 
-执行逻辑：读取 MR 的 `diff_refs.start_sha`（旧目标版本）和 `head_sha`；再次请求目标分支当前 SHA，**不一致就报 `TARGET_MOVED`**，不使用悄悄漂移的分支基线；克隆真实 Git 对象并对 V1.0 扫描；最后记录 V1.1 的 `SOURCE_HEAD_ONLY` 候选。已合并 MR 不支持用当前目标分支倒推原来的 V1.0，必须用精确旧 Commit 处理。
+**`owner` 是什么？** 项目所属责任人/团队备注，用于将来筛选和分派人工评审，**不是 GitLab 用户名、权限或必填项**；回车可跳过。已有项目保持原来的 owner，不会因为本次向导留空而覆盖。
 
-基线没有扫描警告且人工核对旧版本 SHA/项目范围后，可显式确认：
+## 2. 已有非交互命令（继续兼容）
 
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis baseline-verify `
-  --project rhf/spms-back `
-  --version V1.0 `
-  --acknowledge
-~~~
+不想使用向导时，仍可通过以下命令操作：
 
-**该确认不代表已经识别全部业务依赖**；无法解析的动态调用和未纳管资源仍需后续阶段处理。
+| 命令 | 用途 |
+| --- | --- |
+| `catalog-add --project rhf/spms-back` | 手工登记项目，`--owner` 可选 |
+| `catalog-list` | 查看已登记项目与基线覆盖 |
+| `baseline-local --project ... --version ... --repo ... --sha ...` | 指定固定旧版本 Commit 建立基线 |
+| `baseline-mr --allowed-host ... --mr ... --old-version ... --new-version ...` | 从未合并的 GitLab MR 建立旧版基线和候选 |
+| `baseline-status` | 查看 SQLite 基线、候选和扫描缺口 |
+| `baseline-verify --project ... --version ... --acknowledge` | 人工确认已核对的版本/扫描范围 |
+| `review-local --repo ... --base ... --head ...` | 比较单个本地项目固定 SHA |
+| `review-mrs --allowed-host ... --mr ... [--mr ...]` | 非交互分析多个 GitLab MR |
 
-如果要使用另一个数据库文件，可以给每条新命令添加 `--db "G:\diff-analysis-data\state.sqlite3"`。数据库文件不要提交到 Git 仓库。
+完整参数：`.\.venv\Scripts\python.exe -m diff_analysis --help`；基线/旧命令详细规则参见 [P0 使用说明](docs/P0_USAGE.md) 与 [Windows 安装指南](docs/WINDOWS_SETUP.md)。
 
-## 4. 原有 P0 代码评审保持可用
+## 3. 当前能力与后续计划
 
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis review-mrs `
-  --allowed-host gitlab.example.cn `
-  --mr "https://gitlab.example.cn/rhf/spms-back/-/merge_requests/101" `
-  --mr "https://gitlab.example.cn/rhf/refund-service/-/merge_requests/52" `
-  --output report.md `
-  --json-output review.json
-~~~
-
-此命令与新增的基线命令**目前仍然是独立路径**：P0 生成方法级评审报告；P1-B 建立带版本的源码/分析快照。后续的 Diff Coverage Ledger、跨程序业务主链关联会复用这两类数据。
-
-## 5. 下一阶段路线
-
-| 阶段 | 任务 | 状态 |
+| 阶段 | 内容 | 状态 |
 | --- | --- | --- |
-| P0-S | Windows 本地测试、GitLab MR 读取与基本 Java 静态分析 | 已有基础实现，企业实测仍需确认 |
-| **P1-B01~B03** | 人工项目目录、SQLite、首次固定旧版本基线、MR source HEAD 候选 | **已实现首批** |
-| **P1-B04~B10** | 全纳管项目版本快照、最终合并结果验证与晋升、跨项目版本批次、扫描缓存与 API | 待开发 |
-| P2-L | 每个 Git Diff Hunk 处理记录 + A 项目主逻辑 | 待开发 |
-| P3-X | 跨项目交叉媒介和证据断点：Java → Dubbo/SQL/MQ/Redis | 待开发 |
-| P4-U | Python + SQLite + 本地 Web，按 A 主链/交叉点/B 主链分层展示 | 待开发 |
-| P5-C | 长期业务场景库、NEW/CHANGED/UNCHANGED/UNKNOWN 契约 | 待开发 |
-| P6-E | 一条隔离资金业务的 V1/V2 可观察行为差异验证 | 待开发 |
+| P0 | GitLab MR、固定 Git Diff、Java AST、反向调用与 Markdown/JSON | 已有基础实现 |
+| P1-B | SQLite 人工项目清单、首次旧版本固定 SHA 基线、MR head 候选 | 首批已实现 |
+| 交互 CLI | 多本地项目/MR 逐步录入、独立 Git 修订号、统一报告 | 已编码，需本地 Windows 实测 |
+| P1-B 后续 | 多 MR 合并候选、实际合并结果校验、新基线晋升、批次扫描、Web API | 待开发 |
+| P2-L / P3-X | Diff Coverage Ledger、业务主链与跨项目资源交叉点 | 待开发 |
+| P4-U | Python 后端 + 本地 Web 界面 + SQLite | 待开发 |
+| P5-C / P6-E | 业务行为契约、单条资金业务 V1/V2 隔离差异执行 | 待开发 |
 
-**质量原则**：项目全集由用户维护，扫描失败和未知项必须显示；代码差异处理完整不等于业务影响已全部发现；所有依赖/业务结论都应有可核验的证据，不可让 AI 按猜测生成确定调用边。
+**重要边界**：默认静态扫描并不能保证发现所有依赖；项目全集由用户维护。方法同名匹配仅供候选，不能证明 B 必然受 A 影响。实际业务必须进一步核对 Dubbo、SQL、数据源身份、MQ/Redis 或执行结果。
 
-## 6. 文档
+## 4. 设计文档
 
-- [Windows 安装、GitLab Token、JDK 8/17 排障](docs/WINDOWS_SETUP.md)
-- [现有 P0 命令行使用及能力边界](docs/P0_USAGE.md)
-- [v3 完整架构：版本基线、双台账、主链交叉点](docs/ARCHITECTURE_V3.md)
-- [v3 分阶段开发与验收标准](docs/DEVELOPMENT_PLAN_V3.md)
+- [v3 架构：相邻版本基线、双台账、业务主链交叉点](docs/ARCHITECTURE_V3.md)
+- [v3 开发计划和待办](docs/DEVELOPMENT_PLAN_V3.md)
+- [Windows GitLab 接入和故障处理](docs/WINDOWS_SETUP.md)
 
-旧 v2 文件仅存档，不作为当前实施依据。
+本 README 保留**当前可运行入口和准确能力边界**；旧版设计及历史讨论保存在 `docs/`，不再反复堆叠到首页。

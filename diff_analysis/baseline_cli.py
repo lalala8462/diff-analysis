@@ -11,7 +11,7 @@ def configure(sub):
     a = sub.add_parser("catalog-add", help="Manually register an in-scope GitLab project")
     a.add_argument("--db", default=".diff-analysis/state.sqlite3")
     a.add_argument("--project", required=True, help="GitLab namespace/project")
-    a.add_argument("--owner", default="")
+    a.add_argument("--owner", default=None)
 
     a = sub.add_parser("catalog-list", help="Show full user-maintained project scope")
     a.add_argument("--db", default=".diff-analysis/state.sqlite3")

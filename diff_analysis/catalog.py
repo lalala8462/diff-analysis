@@ -92,14 +92,16 @@ class CatalogStore:
     def revision(self):
         return self.conn.execute("SELECT revision FROM catalog_meta WHERE id=1").fetchone()[0]
 
-    def add_project(self, project, owner=""):
+    def add_project(self, project, owner=None):
         project = validate_project(project)
-        if not isinstance(owner, str) or len(owner) > 128:
+        if owner is not None and (not isinstance(owner, str) or len(owner) > 128):
             raise BaselineError("Invalid owner")
         with self.conn:
             existing = self.conn.execute(
                 "SELECT active, owner FROM catalog_project WHERE project_path=?", (project,)
             ).fetchone()
+            if owner is None:
+                owner = existing["owner"] if existing is not None else ""
             if existing is None:
                 self.conn.execute(
                     "INSERT INTO catalog_project(project_path, owner) VALUES(?, ?)",
