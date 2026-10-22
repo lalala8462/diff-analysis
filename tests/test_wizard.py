@@ -1,10 +1,12 @@
 """End-to-end interactive local project revision comparison without GitLab network."""
 import json
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from diff_analysis.catalog import CatalogStore
 from diff_analysis.wizard import run_wizard, resolve_revision
@@ -113,6 +115,44 @@ class WizardTests(unittest.TestCase):
                     "original-team",
                     next(p["owner"] for p in store.list_projects()
                          if p["project_path"] == "rhf/one"))
+
+
+    def test_gitlab_mr_mode_stores_unmerged_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, old, head = sample_repo(tmp, "one")
+            folder = Path(tmp)
+            args = SimpleNamespace(db=str(folder / "db.sqlite3"),
+                                   output=str(folder / "report.md"),
+                                   json_output=str(folder / "report.json"))
+            url = "https://gitlab.example.cn/rhf/one/-/merge_requests/11"
+            mr = {"project": "rhf/one", "url": url,
+                  "state": "opened", "origin": "https://gitlab.example.cn",
+                  "target_branch": "V1.0", "source_branch": "V1.1",
+                  "base": old, "start": old, "head": head}
+            responses = ["2", url, "", "", "", "", "0", "y"]
+            with patch.dict(os.environ, {"GITLAB_TOKEN": "test-token"}), \
+                    patch("diff_analysis.wizard.get_mr", return_value=mr), \
+                    patch("diff_analysis.wizard.target_branch_sha", return_value=old), \
+                    patch("diff_analysis.wizard.clone_mr", return_value=repo):
+                self.assertTrue(run_wizard(args, answers(responses), lambda _: None))
+            with CatalogStore(args.db) as store:
+                self.assertEqual(old, store.snapshot("rhf/one", "V1.0")["commit_sha"])
+                self.assertIsNone(store.snapshot("rhf/one", "V1.1"))
+                self.assertEqual("SOURCE_HEAD_ONLY", store.candidates()[0]["state"])
+
+    def test_invalid_equal_revisions_do_not_create_catalog(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, _, _ = sample_repo(tmp, "one")
+            folder = Path(tmp)
+            args = SimpleNamespace(db=str(folder / "db.sqlite3"),
+                                   output=str(folder / "report.md"),
+                                   json_output=str(folder / "report.json"))
+            # The invalid project is rejected, then q cancels the wizard.
+            responses = ["1", str(repo), "rhf/one", "V1.0", "V1.0", "q"]
+            lines = []
+            self.assertFalse(run_wizard(args, answers(responses), lines.append))
+            self.assertTrue(any("同一个 Commit" in line for line in lines))
+            self.assertFalse(Path(args.db).exists())
 
 
 if __name__ == "__main__":
