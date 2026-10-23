@@ -14,7 +14,7 @@ from .scanner import ScannerError, scan_tree, build_graph
 from .catalog import BaselineError
 from . import baseline_cli
 from . import wizard
-from .release_report import write_release_bundle
+from .release_report import write_release_bundle, start_ledger_checkpoint
 
 
 def catalog_result(repo, sha, root, cache):
@@ -68,7 +68,6 @@ def parser():
 
 
 def run(args):
-    from .review import review_repo
     if args.command == 'wizard':
         wizard.run_wizard(args)
         return
@@ -77,14 +76,12 @@ def run(args):
     with tempfile.TemporaryDirectory(prefix='diff-analysis-') as tmp:
         root = Path(tmp)
         cache = root / 'javac'
-        results = []
-        specs = []
-        meta = {}
+        results, specs, meta, scan_failures = [], [], {}, []
         if args.command == 'review-local':
             repo = Path(args.repo).resolve()
             project = args.project or repo.name
-            results.append(review_repo(repo, project, args.base, args.head, root / 'sources-0', cache))
-            specs.append((repo, project, results[-1]['base'], results[-1]['head']))
+            # The checkpoint validates revisions and records Git errors per project.
+            specs.append((repo, project, args.base, args.head))
         else:
             if not re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', args.token_env):
                 raise ValueError('Invalid environment variable name')
@@ -94,32 +91,79 @@ def run(args):
             for i, url in enumerate(args.mr):
                 mr = get_mr(url, args.allowed_host, token, args.allow_http)
                 repo = clone_mr(mr, root / ('clone-%s' % i), token)
-                results.append(review_repo(repo, mr['project'], mr['base'], mr['head'], root / ('sources-%s' % i), cache))
-                specs.append((repo, mr['project'], results[-1]['base'], results[-1]['head']))
+                specs.append((repo, mr['project'], mr['base'], mr['head']))
                 meta[mr['project']] = {'url': mr['url'], 'head': mr['head']}
+
+        # P1-A: save independent, immutable Git evidence before compiling or
+        # running the optional Java analyzer. An individual scanner failure
+        # never discards the saved ledger of another project.
+        bundle_root, manifest = start_ledger_checkpoint(specs, args.run_root)
+        usable = {(l['project'], l['base'], l['head'])
+                  for l in manifest['ledgers']}
+        for i, (repo, project, base, head) in enumerate(specs):
+            if (project, base, head) not in usable:
+                continue
+            try:
+                result = review_repo(repo, project, base, head,
+                                     root / ('sources-%s' % i), cache)
+            except (ScannerError, GitError, OSError, ValueError) as exc:
+                scan_failures.append({
+                    'project': project, 'base': base, 'head': head,
+                    'stage': 'STATIC_SCAN', 'error_type': type(exc).__name__,
+                    'reason': str(exc)[:500]})
+                continue
+            results.append(result)
+
         for i, item in enumerate(args.catalog):
             location, sep, sha = item.rpartition('@')
             if not sep:
-                raise ValueError('Expected --catalog /repo/path@<commit-sha>')
-            results.append(catalog_result(Path(location).resolve(), sha, root / ('catalog-%s' % i), cache))
+                scan_failures.append({
+                    'project': item, 'stage': 'CATALOG_SCAN',
+                    'error_type': 'InvalidCatalogSpec',
+                    'reason': 'Expected --catalog /repo/path@<commit-sha>'})
+                continue
+            repo = Path(location).resolve()
+            try:
+                results.append(catalog_result(
+                    repo, sha, root / ('catalog-%s' % i), cache))
+            except (ScannerError, GitError, OSError, ValueError) as exc:
+                scan_failures.append({
+                    'project': repo.name, 'stage': 'CATALOG_SCAN',
+                    'error_type': type(exc).__name__, 'reason': str(exc)[:500]})
+
         candidates = stitch_cross_project(results)
         report = markdown(results, candidates, meta)
+        if manifest['failures'] or scan_failures:
+            report += ('\n\n## 阶段失败（请优先阅读独立运行目录）\n\n'
+                       '部分扫描失败，不能据此认定没有影响；'
+                       'Git 底账与阶段状态保存在 ledger_checkpoint.json'
+                       ' 和独立 report.md 中。\n')
         output = Path(args.output).resolve()
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(report, encoding='utf8')
         if args.json_output:
             dest = Path(args.json_output).resolve()
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(json.dumps({'results': results, 'cross_candidates': candidates}, ensure_ascii=False, indent=2), encoding='utf8')
-        print('Review saved:', output)
-        print('Repositories:', len(results), '| Modified methods:', sum(len(r['changed_methods']) for r in results), '| Cross-project candidates:', len(candidates))
-        bundle, _ = write_release_bundle(
+            dest.write_text(json.dumps({
+                'results': results, 'cross_candidates': candidates,
+                'stage_failures': manifest['failures'] + scan_failures,
+            }, ensure_ascii=False, indent=2), encoding='utf8')
+        bundle, release = write_release_bundle(
             specs, results, candidates, args.run_root, args.db,
             refactoringminer_bin=args.refactoringminer_bin,
             codetracker_evidence=args.codetracker_evidence,
-            attribution_rules=args.attribution_rules)
+            attribution_rules=args.attribution_rules,
+            checkpoint={'root': bundle_root, 'manifest': manifest},
+            scan_failures=scan_failures)
+        print('Review saved:', output)
+        print('Repositories scanned:', len(results),
+              '| Modified methods:', sum(len(r['changed_methods']) for r in results),
+              '| Cross-project candidates:', len(candidates))
         print('Timestamped evidence & candidate groups:', bundle)
         print('Offline AI-ready report:', bundle / 'ai_review.md')
+        if release.get('stage_failures'):
+            print('WARNING: %d stage failures; see independent report.md and '
+                  'ledger_checkpoint.json' % len(release['stage_failures']))
         print('CAUTION: Static analysis is not a proof of compatibility.')
 
 
