@@ -245,6 +245,8 @@ def import_review(run_dir, payload):
         planned_rules.append({**item, "created_at_utc": _utc()})
     known_ids = {d["id"] for d in state["decisions"]}
     for item in payload.get("decisions", []):
+        if not isinstance(item, dict):
+            raise ValueError("Each decision must be an object")
         obj = item.get("object_type")
         oid = item.get("object_id")
         actor = item.get("actor_kind")
