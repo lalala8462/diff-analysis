@@ -100,6 +100,54 @@ class OfflineWorkflowTests(unittest.TestCase):
             self.assertTrue(all(x["basis_check"] == "NOT_REVIEWED"
                                 for x in state["decisions"]))
 
+    def test_confirmed_goal_revision_and_rule_point_do_not_auto_approve(self):
+        from diff_analysis.review_feedback import review_status
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            release = sample_release()
+            (root / "analysis.json").write_text(json.dumps(release), encoding="utf-8")
+            qid = export_questions(root, release)["questions"][0]["id"]
+            initial = {
+                "schema_version": "review-import-v1",
+                "expected_goals": [{
+                    "id": "GOAL-before", "status": "HUMAN_CONFIRMED",
+                    "author": "reviewer", "text": "Previous accepted status should work"
+                }],
+                "rule_points": [{
+                    "id": "RULE-state", "expected_goal_id": "GOAL-before",
+                    "status": "CANDIDATE", "author": "local-ai",
+                    "condition": "When a payment status is accepted",
+                    "expected_behavior": "Consumers still continue processing",
+                    "invariant": "Do not settle the same trade twice"
+                }],
+                "decisions": [{
+                    "object_type": "QUESTION", "object_id": qid,
+                    "actor_kind": "HUMAN", "actor_id": "reviewer",
+                    "dimension": "CONFORMANCE", "verdict": "SUPPORT",
+                    "reason": "Initial implementation aligns with old requirement",
+                    "expected_goal_id": "GOAL-before",
+                    "evidence_ids": ["D-1234567890abcdef"]
+                }]
+            }
+            first = import_review(root, initial)
+            self.assertEqual(1, first["rules_added"])
+            update = {
+                "schema_version": "review-import-v1",
+                "expected_goals": [{
+                    "id": "GOAL-after", "supersedes": "GOAL-before",
+                    "status": "HUMAN_CONFIRMED", "author": "reviewer",
+                    "text": "New condition forbids accepting expired status"
+                }]
+            }
+            import_review(root, update)
+            summary = review_status(root)
+            self.assertEqual("NEEDS_REVIEW",
+                             summary["current_latest"][0]["current_applicability"])
+            state = json.loads((root / "review_state.json").read_text("utf-8"))
+            self.assertEqual(2, len(state["expected_goals"]))
+            self.assertEqual("CANDIDATE", state["rule_points"][0]["status"])
+
+
     def test_pinned_supplement_and_duplicate_no_progress(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
