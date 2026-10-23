@@ -104,7 +104,15 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
 - 内网 GitLab 若只能使用 HTTP，必须显式附加 `--allow-http`。这会明文传输凭据，**仅在已确认可信的隔离网络中使用**，优先启用 HTTPS。
 - 支持将未修改、但可能是调用方的**本地其他仓库**加入静态扫描：重复追加 `--catalog "D:\repos\other-service@<完整CommitSHA>"`，该仓库必须已经存在且含有对应 SHA。
 
-非交互 `review-local` / `review-mrs` 入口会先逐项目保存 Git 底账，然后尝试 Java 分析。JDK 缺失或部分项目扫描失败时仍生成部分报告，`analysis.json` 的 `status=PARTIAL_EVIDENCE`，并标出 `stage_failures`；保留的 Git 差异不表示依赖扫描完整。手动保留 `ledger_checkpoint.json` 便于诊断，自动重建命令尚未实现；向导当前仍可能在基线扫描阶段中止。
+非交互 `review-local` / `review-mrs` 入口会先逐项目保存 Git 底账，然后尝试 Java 分析。JDK 缺失或部分项目扫描失败时仍生成部分报告，`analysis.json` 的 `status=PARTIAL_EVIDENCE`，并标出 `stage_failures`；保留的 Git 差异不表示依赖扫描完整。手动保留 `ledger_checkpoint.json` 便于诊断，可用以下命令在不调用 Git/JDK 的情况下从检查点重新生成基础报告；它不会恢复 Java 静态分析结果。向导当前仍可能在基线扫描阶段中止。
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis rebuild-checkpoint `
+  --checkpoint ".\.diff-analysis\runs\<运行目录>\ledger_checkpoint.json" `
+  --run-root ".\.diff-analysis\runs"
+```
+
+重建会创建新的运行目录，不覆盖原检查点；新报告的 `status=PARTIAL_EVIDENCE`，每个项目标记 `STATIC_SCAN/NOT_RERUN`。
 
 执行后终端打印独立运行目录及 `ai_review.md` 的完整路径。默认每次创建 `.diff-analysis/runs/<UTC日期时间>-<随机标识>/`，例如 `20261023T050000Z-a1b2c3d4` 对应北京时间 2026-10-23 13:00：
 
