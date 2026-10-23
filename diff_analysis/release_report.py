@@ -400,6 +400,69 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     return root, release
 
 
+def rebuild_from_checkpoint(checkpoint_path, run_root, db=None):
+    """Recreate human/AI reports using only a saved Git ledger, without JDK/Git.
+
+    The rebuilt report never claims that method analysis was recovered. The
+    original run is not modified, and optional external enrichment is disabled.
+    """
+    import re
+    source = Path(checkpoint_path).expanduser().resolve()
+    if source.stat().st_size > 100_000_000:
+        raise ValueError("Checkpoint exceeds the 100 MB recovery limit")
+    manifest = json.loads(source.read_text(encoding="utf-8"))
+    if (not isinstance(manifest, dict) or
+            manifest.get("schema_version") != "git-ledger-checkpoint-v1" or
+            not isinstance(manifest.get("ledgers"), list) or
+            not isinstance(manifest.get("projects"), list) or
+            not isinstance(manifest.get("failures"), list)):
+        raise ValueError("Unsupported or malformed Git ledger checkpoint")
+    seen = set()
+    for ledger in manifest["ledgers"]:
+        if (not isinstance(ledger, dict) or
+                not all(isinstance(ledger.get(k), str)
+                        for k in ("project", "base", "head")) or
+                not isinstance(ledger.get("final_changes"), list)):
+            raise ValueError("Invalid ledger structure")
+        key = (ledger["project"], ledger["base"], ledger["head"])
+        if key in seen:
+            raise ValueError("Duplicate project/version in checkpoint")
+        seen.add(key)
+        for change in ledger["final_changes"]:
+            if (not isinstance(change, dict) or
+                    not re.fullmatch(r"D-[0-9a-f]{16}", str(change.get("id", ""))) or
+                    any(change.get(k) != ledger[v]
+                        for k, v in (("project", "project"),
+                                     ("base_sha", "base"), ("head_sha", "head")))):
+                raise ValueError("Invalid change identity in checkpoint")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = stamp + "-" + uuid.uuid4().hex[:8]
+    root = Path(run_root).expanduser().resolve() / run_id
+    root.mkdir(parents=True, exist_ok=False)
+    manifest["original_run_id"] = manifest.get("run_id")
+    manifest["recovered_from"] = str(source)
+    manifest["run_id"] = run_id
+    (root / "ledger_checkpoint.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    specs = [(None, ledger["project"], ledger["base"], ledger["head"])
+             for ledger in manifest["ledgers"]]
+    skipped_scans = [{
+        "project": ledger["project"], "base": ledger["base"],
+        "head": ledger["head"], "stage": "STATIC_SCAN",
+        "error_type": "NOT_RERUN",
+        "reason": "Rebuilt from Git-only checkpoint; Java scan was not rerun"
+    } for ledger in manifest["ledgers"]]
+    if manifest.get("state") == "COLLECTING":
+        skipped_scans.append({
+            "project": "(checkpoint)", "stage": "GIT_LEDGER",
+            "error_type": "INTERRUPTED",
+            "reason": "Original Git ledger collection did not finish"})
+    return write_release_bundle(
+        specs, [], [], run_root, db,
+        checkpoint={"root": root, "manifest": manifest},
+        scan_failures=skipped_scans)
+
+
 def _register_run(db, run_id, root, release):
     # Independent from catalog/baseline tables; model conclusions never mutate version facts.
     import sqlite3
