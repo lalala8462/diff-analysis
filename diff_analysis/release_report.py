@@ -220,7 +220,8 @@ def start_ledger_checkpoint(specs, run_root):
             manifest["projects"].append({"project": project, "base": base,
                                          "head": head, "git_ledger": "SAVED"})
         persist()
-    manifest["state"] = ("PARTIAL" if manifest["failures"] else "SAVED")
+    manifest["state"] = ("FAILED" if not manifest["ledgers"] else
+                         "PARTIAL" if manifest["failures"] else "SAVED")
     persist()
     return root, manifest
 
@@ -251,13 +252,19 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         for row in manifest["projects"]:
             key = (row["project"], row["base"], row["head"])
             review = keys.get(key)
+            baseline_fail = next((x for x in scan_failures
+                                  if x.get("stage") == "BASELINE" and
+                                  (x.get("project"), x.get("base"), x.get("head")) == key), None)
             release["project_phase_status"].append({
-                **row, "static_scan": ("NOT_RUN" if row["git_ledger"] == "FAILED"
+                **row, "baseline": "FAILED" if baseline_fail else "UNKNOWN",
+                "static_scan": ("NOT_RUN" if row["git_ledger"] == "FAILED"
                     else "FAILED" if key in failures
                     else "PARTIAL" if review and review.get("incomplete")
                     else "COMPLETED" if review else "NOT_RUN")})
         release["stage_failures"] = manifest["failures"] + scan_failures
-        if release["stage_failures"]:
+        if not manifest["ledgers"]:
+            release["status"] = "FAILED_GIT_LEDGER"
+        elif release["stage_failures"]:
             release["status"] = "PARTIAL_EVIDENCE"
         release["warnings"].extend(
             ["One or more phases failed; missing static evidence is not a safe result"]
