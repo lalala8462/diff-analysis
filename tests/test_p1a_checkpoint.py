@@ -70,6 +70,40 @@ class LedgerCheckpointTests(unittest.TestCase):
             self.assertIn("FAILED", (bundle / "report.md").read_text("utf-8"))
             self.assertIn("部分扫描失败", Path(args.output).read_text("utf-8"))
 
+    def test_one_gitlab_mr_prepare_failure_keeps_other_git_ledger(self):
+        from diff_analysis.gitlab import GitLabError
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            repo, base, head = sample_repo(root, "successful")
+            good = "https://gitlab.example.com/team/good/-/merge_requests/1"
+            bad = "https://gitlab.example.com/team/bad/-/merge_requests/2"
+            args = SimpleNamespace(
+                command="review-mrs", mr=[bad, good],
+                allowed_host="gitlab.example.com", allow_http=False,
+                token_env="GITLAB_TOKEN", evidence=[], catalog=[],
+                run_root=str(root / "runs"), output=str(root / "legacy.md"),
+                json_output=str(root / "legacy.json"),
+                db=str(root / "state.sqlite3"), refactoringminer_bin=None,
+                codetracker_evidence=None, attribution_rules=None)
+            good_mr = {"project": "team/good", "base": base, "head": head,
+                       "url": good}
+            with patch.dict("os.environ", {"GITLAB_TOKEN": "local-test-only"}):
+                with patch("diff_analysis.cli.get_mr",
+                           side_effect=[GitLabError("invalid MR"), good_mr]):
+                    with patch("diff_analysis.cli.clone_mr", return_value=repo):
+                        with patch("diff_analysis.cli.review_repo",
+                                   side_effect=ScannerError("no JDK")):
+                            run(args)
+            dirs = list((root / "runs").iterdir())
+            self.assertEqual(1, len(dirs))
+            release = json.loads((dirs[0] / "analysis.json").read_text("utf-8"))
+            self.assertEqual(1, len(release["ledgers"]))
+            self.assertEqual("PARTIAL_EVIDENCE", release["status"])
+            phases = [r["stage"] for r in release["stage_failures"]]
+            self.assertIn("PREPARE", phases)
+            self.assertIn("STATIC_SCAN", phases)
+
+
     def test_bad_project_does_not_erase_successful_project(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
