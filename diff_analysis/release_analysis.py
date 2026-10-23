@@ -238,6 +238,8 @@ def candidate_groups(ledgers):
     grouped = defaultdict(list)
     group_meta = defaultdict(set)
     for ledger in ledgers:
+        if ledger.get("role") == "EVIDENCE":
+            continue
         for change in ledger["final_changes"]:
             # Prefer last-touch evidence for this final Hunk, which can
             # distinguish unrelated edits to the same file. If blame finds
