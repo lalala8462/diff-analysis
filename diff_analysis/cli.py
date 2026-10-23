@@ -169,7 +169,7 @@ def run(args):
                     continue
 
         roles = {}
-        for entry in args.evidence:
+        for entry in getattr(args, 'evidence', []):
             project, sep, rest = entry.partition('=')
             location, delim, head = rest.rpartition('@')
             folder, delim2, base = location.rpartition('@')
