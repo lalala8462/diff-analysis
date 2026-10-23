@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from diff_analysis.cli import run
-from diff_analysis.release_report import start_ledger_checkpoint, write_release_bundle
+from diff_analysis.release_report import (start_ledger_checkpoint, write_release_bundle,
+                                          rebuild_from_checkpoint)
 from diff_analysis.release_analysis import final_diff_ledger, attach_review_to_ledger
 from diff_analysis.scanner import ScannerError
 
@@ -85,6 +86,41 @@ class LedgerCheckpointTests(unittest.TestCase):
             self.assertEqual(1, len(release["ledgers"]))
             self.assertEqual("FAILED", release["project_phase_status"][1]["git_ledger"])
             self.assertTrue((bundle / "report.md").exists())
+
+    def test_offline_rebuild_preserves_raw_diff_without_repeating_git_or_scan(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            repo, base, head = sample_repo(root, "one")
+            first, checkpoint = start_ledger_checkpoint(
+                [(repo, "demo/one", base, head)], root / "runs")
+            source = first / "ledger_checkpoint.json"
+            before = source.read_bytes()
+            with patch("diff_analysis.release_report.final_diff_ledger",
+                       side_effect=AssertionError("must not re-run Git")), \\
+                    patch("diff_analysis.scanner.scan_tree",
+                          side_effect=AssertionError("must not run Java")):
+                rebuilt, release = rebuild_from_checkpoint(
+                    source, root / "runs", root / "state.sqlite3")
+            self.assertNotEqual(first, rebuilt)
+            self.assertEqual(before, source.read_bytes())
+            self.assertEqual("PARTIAL_EVIDENCE", release["status"])
+            self.assertEqual("NOT_RERUN", release["stage_failures"][0]["error_type"])
+            ids = [x["id"] for x in checkpoint["ledgers"][0]["final_changes"]]
+            self.assertEqual(ids, [x["id"] for x in release["ledgers"][0]["final_changes"]])
+            self.assertTrue((rebuilt / "report.md").exists())
+            self.assertTrue((rebuilt / "ai_review.md").exists())
+
+    def test_rebuild_rejects_invalid_checkpoint_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            repo, base, head = sample_repo(root, "one")
+            first, manifest = start_ledger_checkpoint(
+                [(repo, "demo/one", base, head)], root / "runs")
+            manifest["ledgers"][0]["final_changes"][0]["id"] = "../escaping"
+            corrupted = root / "invalid.json"
+            corrupted.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                rebuild_from_checkpoint(corrupted, root / "runs")
 
     def test_review_enrichment_preserves_saved_git_diff_identity(self):
         with tempfile.TemporaryDirectory() as folder:
