@@ -44,13 +44,6 @@ def parser():
     remote.add_argument('--token-env', default='GITLAB_TOKEN', help='Environment variable name, not token value')
     remote.add_argument('--allow-http', action='store_true', help='Only for an explicitly trusted internal network')
     for child in (local, remote):
-        child.add_argument('--model-endpoint', default=None,
-                           help='Opt-in compatible chat/completions URL; uploads code context')
-        child.add_argument('--model-name', default=None)
-        child.add_argument('--model-key-env', default='DIFF_ANALYSIS_MODEL_API_KEY')
-        child.add_argument('--allow-remote-model', action='store_true',
-                           help='Explicit consent to send source-code context to remote HTTPS model')
-        child.add_argument('--max-model-groups', type=int, default=20)
         child.add_argument('--output', default='report.md')
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
@@ -61,11 +54,6 @@ def parser():
     interactive.add_argument('--output', default='report.md')
     interactive.add_argument('--json-output', default='review.json')
     interactive.add_argument('--run-root', default='.diff-analysis/runs')
-    interactive.add_argument('--model-endpoint', default=None)
-    interactive.add_argument('--model-name', default=None)
-    interactive.add_argument('--model-key-env', default='DIFF_ANALYSIS_MODEL_API_KEY')
-    interactive.add_argument('--allow-remote-model', action='store_true')
-    interactive.add_argument('--max-model-groups', type=int, default=20)
     baseline_cli.configure(sub)
     return p
 
@@ -117,11 +105,7 @@ def run(args):
         print('Review saved:', output)
         print('Repositories:', len(results), '| Modified methods:', sum(len(r['changed_methods']) for r in results), '| Cross-project candidates:', len(candidates))
         bundle, _ = write_release_bundle(
-            specs, results, candidates, args.run_root, args.db,
-            model_endpoint=args.model_endpoint, model_name=args.model_name,
-            allow_remote_model=args.allow_remote_model,
-            model_key_env=args.model_key_env,
-            max_model_groups=args.max_model_groups)
+            specs, results, candidates, args.run_root, args.db)
         print('Timestamped evidence & candidate groups:', bundle)
         print('CAUTION: Static analysis is not a proof of compatibility.')
 

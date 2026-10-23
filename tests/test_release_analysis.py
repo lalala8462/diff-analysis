@@ -99,7 +99,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             evidence = final_diff_ledger(repo, "rhf/pay", head, base)
             self.assertGreater(len(evidence["final_changes"]), 0)
 
-    def test_single_run_evidence_and_model_inputs_not_executed(self):
+    def test_single_run_evidence_and_offline_ai_reports(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
             repo = setup(directory / "repo")
@@ -110,13 +110,19 @@ class ReleaseEvidenceTests(unittest.TestCase):
                 specs, [], [], directory / "runs", directory / "analysis.sqlite3")
             self.assertTrue((out / "report.md").exists())
             self.assertTrue((out / "analysis.json").exists())
-            self.assertEqual("NOT_INVOKED", release["model_status"])
+            self.assertEqual("OFFLINE_AI_INPUT", release["report_mode"])
             self.assertEqual(1, len(release["groups"]))
             group_id = release["groups"][0]["id"]
-            payload = json.loads(
-                (out / "model_inputs" / (group_id + ".json")).read_text("utf-8"))
-            self.assertTrue(payload["facts"])
-            self.assertEqual(group_id, payload["group_id"])
+            group_text = (
+                out / "group_reports" / (group_id + ".md")).read_text("utf-8")
+            self.assertIn(group_id, group_text)
+            self.assertIn("Git 历史", group_text)
+            self.assertIn("PAY-13 change", group_text)
+            ai_text = (out / "ai_review.md").read_text("utf-8")
+            self.assertIn(group_id, ai_text)
+            self.assertIn("旧版代码", ai_text)
+            self.assertFalse((out / "model_inputs").exists())
+            self.assertNotIn("model_results", release)
             change_id = release["ledgers"][0]["final_changes"][0]["id"]
             evidence = (out / "evidence" / (change_id + ".md")).read_text("utf-8")
             self.assertIn("旧版", evidence)
@@ -124,6 +130,23 @@ class ReleaseEvidenceTests(unittest.TestCase):
             self.assertIn(change_id, (out / "report.md").read_text("utf-8"))
             # Even with exact changes, no business conclusion is asserted.
             self.assertEqual("STATIC_CANDIDATES_ONLY", release["status"])
+
+    def test_offline_report_keeps_all_changes_without_ai_budget_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = setup(Path(tmp) / "repo")
+            base = commit(repo, "A.java", "class A {}\n", "base")
+            head = commit(repo, "A.java", "class A { int x; }\n", "PAY-222 change")
+            output, release = write_release_bundle(
+                [(repo, "rhf/pay", base, head)], [], [], Path(tmp) / "runs")
+            ai_text = (output / "ai_review.md").read_text(encoding="utf-8")
+            ids = [c["id"] for ledger in release["ledgers"]
+                   for c in ledger["final_changes"]]
+            self.assertTrue(ids)
+            for identifier in ids:
+                self.assertIn(identifier, ai_text)
+                self.assertTrue((output / "evidence" / (identifier + ".md")).is_file())
+            self.assertIn("OFFLINE_AI_INPUT", (output / "analysis.json").read_text("utf-8"))
+            self.assertFalse((output / "model_inputs").exists())
 
     def test_shared_file_creates_cross_group_review_not_forced_merge(self):
         with tempfile.TemporaryDirectory() as root:
@@ -177,7 +200,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             db = Path(root) / "analysis.sqlite3"
             release = {
                 "status": "STATIC_CANDIDATES_ONLY",
-                "model_status": "NOT_INVOKED",
+                "report_mode": "OFFLINE_AI_INPUT",
                 "project_scope": ["rhf/pay"],
                 "groups": [],
                 "cross_group_checks": [],

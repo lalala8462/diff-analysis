@@ -79,6 +79,10 @@ class WizardTests(unittest.TestCase):
             self.assertEqual(head2, result["comparisons"][1]["head_sha"])
             self.assertIn("本次输入的项目及修订号",
                           Path(args.output).read_text(encoding="utf-8"))
+            # The interactive route also writes a separate offline evidence bundle.
+            # Its default run root is relative to the process working directory.
+            self.assertTrue(any("新版候选需求与证据包" in line for line in logs))
+
             with CatalogStore(args.db) as store:
                 self.assertEqual(2, store.coverage()["total_active"])
                 self.assertEqual(old1, store.snapshot("rhf/one", "V1.0")["commit_sha"])

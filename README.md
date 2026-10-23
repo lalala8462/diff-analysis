@@ -1,111 +1,113 @@
 # Diff Analysis
 
-**版本级代码变更分析：以最终差异为底账、以提交演进解释来源、以代码关系形成需求候选组、检查组间交叉影响，再按组生成供人工评审的报告。**
+**多项目版本变更分析工具**：以最终 Git 差异为底账，利用提交历史解释修改来源，生成需求候选组与组间交叉检查项，输出可以直接交给本地 AI 的离线报告。
 
-> 现有技术栈：Python 3.9+、Java AST Scanner（完整 JDK 8+）、SQLite。  
-> **当前实现**：固定 Git SHA 比较、最终差异与前后 30 行代码证据、提交拓扑/说明、保守的任务候选分组、弱交叉线索与未变更消费者候选、可选模型按组推理、日期时间报告目录。  
-> **尚未实现**：SmartCommitCore/CodeTracker/RefactoringMiner/Code Maat 的直接适配、跨重构精确元素追踪、语义级 SQL/MQ/Redis 血缘、真正的合并候选树、自动基线晋升和 Web UI。候选组不等于已确认的需求，交叉线索不等于缺陷。
+> 当前实现：Python CLI + Java AST + SQLite 基线 + 离线 Markdown/JSON 报告。  
+> **程序不会连接、调用或上传代码到任何 AI 模型。** AI 的使用与推理结果由用户在工具外自行管理。需求候选分组、代码关联和提交归因尚未经过人工确认。
 
 ## 1. Windows 安装
 
-需要 Git for Windows、Python 3.9+、完整 JDK 8+（含 `javac`；推荐分析器使用 JDK 17，业务项目可仍是 Java 8）。
+需要 Git for Windows、Python 3.9+、完整 JDK 8+（含 `javac`）。业务项目可保持原有 Java 版本。
 
 ~~~powershell
-git clone https://github.com/lalala8462/diff-analysis.git
-cd diff-analysis
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+cd G:\Code\diff-analysis
+git pull origin main
+
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ~~~
 
-## 2. 主入口：交互式版本比较
+首次安装参考 [Windows 环境说明](docs/WINDOWS_SETUP.md)。
+
+## 2. 逐项输入本地 Git 项目与版本
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m diff_analysis wizard
 ~~~
 
-或双击仓库根目录的 `start-wizard.cmd`。向导逐项输入**多个项目**及各自旧版/新版的分支名、Tag 或 SHA；GitLab 模式输入未合并 MR 地址并使用 `GITLAB_TOKEN`，流程结束前显示 SHA 摘要供确认。项目 `owner` 为可选的责任人备注，既不是认证参数也不影响分组。
+也可双击 `start-wizard.cmd`。向导逐项提示：
 
-非交互方式：
+1. 添加本地 Git 项目或未合并 GitLab MR；
+2. 输入项目标识、旧版与新版 Git Tag/分支/SHA；
+3. 可选输入 `owner`（仅为责任团队备注，不参与认证或分组）；
+4. 重复添加项目，输入 `0` 结束；
+5. 查看固定 SHA 清单，确认执行比较。
+
+例如：
+
+~~~text
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 1
+本地 Git 项目路径: G:\Code\rhf-all\cps
+项目标识: local/cps
+旧版 Git 修订号: 345c6142e285618b6a64f1a356bb5da8ebb3ff94
+新版 Git 修订号: 657514bc68df3c0704a6cf9c96946de62320dda8
+旧版本标签: 1.140.0
+新版本标签: 1.141.0
+项目责任人: [回车跳过]
+
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 1
+本地 Git 项目路径: G:\Code\rhf-all\webapi
+项目标识: local/webapi
+...输入各自的旧新 Git 版本...
+添加项目：1=本地 Git，2=GitLab MR，0=完成输入: 0
+确认开始扫描并生成报告？y/N: y
+~~~
+
+每个项目可使用不同的 Git 修订号，实际分析前转换为固定 SHA。
+
+不想使用向导时仍可调用 `review-local` / `review-mrs`：
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m diff_analysis review-local `
-  --repo "G:\Code\spms-back" `
-  --base "<完整旧CommitSHA>" `
-  --head "<完整新CommitSHA>" `
-  --output report.md `
-  --json-output review.json
+  --repo "G:\Code\rhf-all\cps" `
+  --base "<完整旧 Commit SHA>" `
+  --head "<完整新 Commit SHA>"
 ~~~
 
-或 `review-mrs --allowed-host gitlab.example.cn --mr <MR URL> [--mr <MR URL>]`。完整旧命令与基线管理使用方式见 [Windows 接入说明](docs/WINDOWS_SETUP.md) 和 [P0 命令](docs/P0_USAGE.md)。
+## 3. 报告生成在哪里？
 
-## 3. 新的分析输出
-
-每次运行在 `.diff-analysis/runs/<UTC日期时间>-<随机标识>/` 创建**独立目录**（可用 `--run-root` 修改），和旧 `--output` / `--json-output` 并存以兼容原有脚本。
+每次运行在 `.diff-analysis/runs/<UTC时间>-<随机号>/` 中独立保存：
 
 ~~~text
-.diff-analysis/runs/20261023T030000Z-a1b2c3d4/
-  report.md                # 按候选需求组阅读、组间待检查事项
-  analysis.json            # 完整最终差异、提交拓扑、候选组/交叉证据
+.diff-analysis/runs/20261023T050000Z-1234abcd/
+  report.md                  # 人工阅读：项目、差异候选组、跨组检查
+  ai_review.md               # 可直接交给本地 AI 的完整上下文报告
+  analysis.json              # 所有净差异、Git 历史、候选组和关系数据
   evidence/
-    D-xxxxxxxxxxxxxxxx.md  # 前后各 30 行源码上下文、路径、固定 SHA
-  model_inputs/
-    G-xxxxxxxxxxxxxxxx.json        # 独立的按组分析输入
-    G-xxxxxxxxxxxxxxxx.result.json # 仅实际启用模型时产生
+    D-xxxxxxxxxxxxxxxx.md    # 单条差异：旧新版各前后 30 行
+  group_reports/
+    G-xxxxxxxxxxxxxxxx.md    # 单组离线 AI 输入：提交、差异、跨组、代码
 ~~~
 
-`analysis.json` 和 `evidence/` 只采集并解释 **base → head 的最终净变化**。中间提交增加、修正、回退会保留在提交拓扑中；完全回退且最终没有差异的代码不生成需求项。
+### 如何交给本地 AI
 
-| 数据层 | 如何产生 | 可信边界 |
-| --- | --- | --- |
-| 最终差异 `D-*` | `git diff base head`，含重命名/删除/二进制的文件事件 | 是本次版本净变化，不代表已经解析行为 |
-| 演进来源 | `git rev-list` 拓扑、commit message、按文件筛选的候选提交 | **文件级候选**，不宣称某个提交精准产生该 Hunk |
-| 需求候选组 `G-*` | 仅当文件候选提交存在**唯一明确任务号**时尝试合组，否则独立保留 | 相同文件/方法/提交不能直接无条件合组 |
-| 交叉检查 `X-*` | 不同组共享文件/符号、同一版本的静态调用路径 | `CHECK_TOGETHER`，不当作业务缺陷 |
-| 模型推理 | 显式配置后逐组发送有限代码证据，引用已有 `D-*` | 模型结论是 `HYPOTHESIS`，不能自动批准 |
-| SQLite | 保留项目/版本基线，另以 `analysis_run` 记录目录与摘要 | 不将需求猜测写入已核验基线 |
+首先打开 `report.md` 了解变更范围和候选组数目。然后：
 
-目前 SQL/XML/前端/配置等变化会被**登记**，但缺少对应语义解析器时记 `NEEDS_REVIEW`，不能因出现文件名就声称已经分析其业务关联。
+- **版本较小**：将 `ai_review.md` 直接粘贴或作为文件交给本地 AI，要求按组分析需求目的、旧新行为及业务交叉影响。
+- **版本较大**：将 `group_reports/G-*.md` 分组输入本地 AI，避免超出上下文窗口；最后结合 `report.md` 和 `analysis.json` 汇总组间交叉问题。
+- 需要核对来源时，可查看 `evidence/D-*.md` 和 `analysis.json`。每个最终变化有固定 `D-*` ID，不依赖模型生成。
 
-## 4. 可选模型分析（默认关闭）
+报告自带分析提示，要求模型引用 D-* 证据，并区分源码事实、Git 提交候选来源和业务推断。**报告不包含模型生成的结论，模型也不会由本项目自动运行。**
 
-需要显式指定兼容 OpenAI Chat Completions JSON 输出的接口。**默认仅生成模型输入文件，不请求任何模型，也不上传源码。**
+## 4. 当前实现能做到什么？
 
-如在本地运行兼容服务：
+| 处理环节 | 能力与边界 |
+| --- | --- |
+| 最终差异 | 从旧 SHA → 新 SHA 计算 Git 净变化，保存文件/Hunk 记录；不支持的类型保留待核验状态 |
+| Git 演进 | 收集提交拓扑、提交说明和文件级提交候选；不保证精确逐 Hunk 归因 |
+| 分组 | 有唯一明确任务号时尝试合成一个候选需求组；其他变化独立保留 |
+| 交叉检查 | 共享文件/符号、旧或新版静态调用路径以及可能受影响的未修改消费者 |
+| 离线报告 | 汇总和分组 Markdown、旧新代码证据、完整 JSON；**不调用 AI** |
+| 版本基线 | SQLite 保存人工纳管项目清单和固定 SHA 快照；真实 MR 合并晋升仍待开发 |
 
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis wizard `
-  --model-endpoint "http://127.0.0.1:1234/v1/chat/completions" `
-  --model-name "your-local-model"
-~~~
+**目前不能证明所有业务依赖已被识别。** 特别是 Spring/Dubbo 动态代理、MyBatis 动态 SQL、数据库/MQ/Redis 等跨程序关系需要更多证据。没有交叉结果不意味着没有影响。
 
-如需将源码发送到企业批准的 HTTPS 远程模型，必须额外添加 `--allow-remote-model`；接口密钥仅从环境变量 `DIFF_ANALYSIS_MODEL_API_KEY` 读取。**模型输入包含内部代码上下文，配置远程服务前需确认公司代码保密政策。**
+## 5. 后续计划
 
-模型单组输入预算默认约 24,000 字符，单次默认最多分析 20 组；超出部分明确列为 `unprovided_change_ids` / `NOT_ANALYZED_BUDGET`。模型接口不可用时仍输出静态报告，并写入失败状态，不以伪造的结论补全。
+- 提高混杂提交的 Hunk→提交归因与 Java 重构识别准确度，再评估 CodeTracker/RefactoringMiner 的可选适配。
+- 丰富分组依据，在不强制合组的前提下借鉴 SmartCommitCore；后续增加 Code Maat 历史共同修改线索。
+- 提高跨服务资源关系解析，建设 A 主链 / 共享资源 / B 主链的证据展示。
+- 后续根据需要增加 Windows 本地 Web 界面；保持分析与模型推理彻底解耦。
 
-模型输出必须引用现有差异 ID，自动降级成待人工确认的假设。**本功能只完成了协议适配代码，尚未验证特定供应商或本地模型的实际兼容性。**
+[离线分析管线设计](docs/PIPELINE_V4.md) · [Windows 配置](docs/WINDOWS_SETUP.md) · [原有 CLI 用法](docs/P0_USAGE.md)
 
-## 5. 下一阶段优先级
-
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| 第一阶段 | 完整最终差异台账、提交证据、前后代码上下文、独立报告目录 | 首批已编码，需 Windows 实测 |
-| 第二阶段 | 基于任务号的保守分组、分离组内与组间关联、保留版本内调用路径 | 首批已编码；精细元素身份映射待开发 |
-| 第三阶段 | 组模型输入与可选模型调用、预算/错误/人工确认 | 首批已编码；模型质量评估待开发 |
-| 第四阶段 | RefactoringMiner 重构检测/纯度、CodeTracker 精细演进追踪 | 待开发 |
-| 第五阶段 | Code Maat 历史共同修改统计，SmartCommitCore 复杂关联分组 | 待开发 |
-| 后续 | SQL/配置/MQ/Redis 血缘、跨服务主链交叉点、业务行为验证、Web | 待开发 |
-
-完整数据模型、工具适配、回归样例、验收标准见 [分析管线 v4 设计](docs/PIPELINE_V4.md)。
-
-## 6. 安全、质量与限制
-
-- 不执行待分析仓库的构建/脚本。Git SHA 与历史演进分开保存；没有提交历史时最终 Diff 仍必须完整。
-- **没有映射成 Java 方法的差异也必须进入底账。** 无法解析、二进制、文件类型不支持以及分析截断均要留下待审核状态。
-- 当前旧/新反向调用图的并集只供旧 P0 报告参考；新跨组证据使用**分别属于 V1 或 V2** 的路径，不能拼成虚构完整调用链。
-- 项目全集由用户维护；不在清单内的消费者和动态依赖不能保证找到。
-- 批量格式化、文件级共同修改、提交说明与 AI 分组都不等于实际需求事实。
-- 证据文件可能含公司源码，请勿公开上传分析目录、SQLite 或 Token。
-- 若没有启用模型，新报告依然按候选组组织，但不包含模型生成的业务解释。
-
-旧的 v3 文档仅作为架构演进历史保留；以本 README 与 `docs/PIPELINE_V4.md` 为当前实施基准。
+旧设计仅作历史参考，首页不再重复追加过时的模型客户端说明。

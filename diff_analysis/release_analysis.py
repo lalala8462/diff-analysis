@@ -379,7 +379,6 @@ def assemble_release(specs, reviews=None, cross_candidates=None):
         "ledgers": ledgers, "groups": groups,
         "cross_group_checks": intersections,
         "consumer_candidates": consumers,
-        "model_status": "NOT_INVOKED",
         "warnings": duplicate_warnings + [
             "File-level commit attribution is only a candidate",
             "Group membership is not confirmed requirement identity",

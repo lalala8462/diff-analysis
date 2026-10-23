@@ -256,12 +256,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
             dest.write_text(report, encoding="utf-8")
             bundle, _ = write_release_bundle(
                 specs, results, candidates, getattr(args, "run_root", ".diff-analysis/runs"),
-                args.db,
-                model_endpoint=getattr(args, "model_endpoint", None),
-                model_name=getattr(args, "model_name", None),
-                allow_remote_model=getattr(args, "allow_remote_model", False),
-                model_key_env=getattr(args, "model_key_env", "DIFF_ANALYSIS_MODEL_API_KEY"),
-                max_model_groups=getattr(args, "max_model_groups", 20))
+                args.db)
             output_json.write_text(json.dumps({
                 "comparisons": comparisons, "catalog_revision": store.revision(),
                 "results": results, "cross_candidates": candidates,
