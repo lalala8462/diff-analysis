@@ -17,6 +17,7 @@ from . import wizard
 from .release_report import (write_release_bundle, start_ledger_checkpoint,
                              rebuild_from_checkpoint)
 from .review_workflow import supplement, import_review
+from .review_feedback import (apply_group_feedback, import_basis_checks, review_status)
 
 
 def catalog_result(repo, sha, root, cache):
@@ -81,6 +82,16 @@ def parser():
                                    help='Append manual and offline-AI decisions')
     review_import.add_argument('--run-dir', required=True)
     review_import.add_argument('--file', required=True, help='review-import-v1 JSON')
+    group_edit = sub.add_parser('revise-groups',
+                                 help='Apply auditable manual group/unit feedback')
+    group_edit.add_argument('--run-dir', required=True)
+    group_edit.add_argument('--file', required=True, help='group-feedback-v1 JSON')
+    basis = sub.add_parser('import-basis-check',
+                           help='Review the evidence basis of an imported decision')
+    basis.add_argument('--run-dir', required=True)
+    basis.add_argument('--file', required=True, help='basis-checks-v1 JSON')
+    state = sub.add_parser('review-status', help='Show independent review status')
+    state.add_argument('--run-dir', required=True)
     baseline_cli.configure(sub)
     return p
 
@@ -88,6 +99,20 @@ def parser():
 def run(args):
     if args.command == 'wizard':
         wizard.run_wizard(args)
+        return
+    if args.command == 'revise-groups':
+        outcome = apply_group_feedback(args.run_dir,
+                        json.loads(Path(args.file).read_text('utf-8')))
+        print('Group revision:', json.dumps(outcome, ensure_ascii=False))
+        return
+    if args.command == 'import-basis-check':
+        outcome = import_basis_checks(args.run_dir,
+                        json.loads(Path(args.file).read_text('utf-8')))
+        print('Basis checks:', json.dumps(outcome, ensure_ascii=False))
+        return
+    if args.command == 'review-status':
+        outcome = review_status(args.run_dir)
+        print('Review status:', json.dumps(outcome, ensure_ascii=False, indent=2))
         return
     if args.command == 'supplement':
         repos = {}
