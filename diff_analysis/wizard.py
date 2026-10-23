@@ -61,7 +61,7 @@ def _default_version(revision, sha):
     return "sha-" + sha[:12]
 
 
-def _local_project(input_fn):
+def _local_project(input_fn, evidence=False):
     location = _ask("本地 Git 项目路径", required=True, input_fn=input_fn)
     repo = Path(location.strip('"')).expanduser().resolve()
     if not repo.is_dir():
@@ -75,7 +75,7 @@ def _local_project(input_fn):
                    required=True, input_fn=input_fn)
     old_sha = resolve_revision(repo, old_ref)
     new_sha = resolve_revision(repo, new_ref)
-    if old_sha == new_sha:
+    if old_sha == new_sha and not evidence:
         raise BaselineError("旧版和新版指向同一个 Commit，无变化可比较")
     old_v = validate_version(_ask(
         "旧版本标签（用于后续基线复用）", _default_version(old_ref, old_sha),
@@ -83,10 +83,11 @@ def _local_project(input_fn):
     new_v = validate_version(_ask(
         "新版本标签（仅用于此次比较展示）", _default_version(new_ref, new_sha),
         input_fn=input_fn))
-    if old_v == new_v:
+    if old_v == new_v and not evidence:
         raise BaselineError("旧版本和新版本的标签不能相同")
     owner = _ask("项目责任人/团队备注（可选，无权限含义）", "", input_fn=input_fn)
-    return {"kind": "local", "repo": repo, "project": project,
+    return {"kind": "local", "role": "EVIDENCE" if evidence else "CHANGE",
+            "repo": repo, "project": project,
             "old_ref": old_ref, "new_ref": new_ref, "base": old_sha, "head": new_sha,
             "old_version": old_v, "new_version": new_v, "owner": owner}
 
@@ -137,19 +138,19 @@ def run_wizard(args, input_fn=input, output_fn=print):
     token = None
     try:
         while True:
-            kind = _ask("添加项目：1=本地 Git，2=GitLab MR，0=完成输入",
+            kind = _ask("添加项目：1=本地变更，2=GitLab MR，3=本地证据项目，0=完成输入",
                         "1" if not items else "0", input_fn=input_fn)
             if kind == "0":
                 if not items:
                     output_fn("至少添加一个项目。")
                     continue
                 break
-            if kind not in ("1", "2"):
-                output_fn("请选择 0、1 或 2。")
+            if kind not in ("1", "2", "3"):
+                output_fn("请选择 0、1、2 或 3。")
                 continue
             try:
-                if kind == "1":
-                    item = _local_project(input_fn)
+                if kind in ("1", "3"):
+                    item = _local_project(input_fn, evidence=(kind == "3"))
                 else:
                     token = token or os.environ.get("GITLAB_TOKEN")
                     if not token:
@@ -157,6 +158,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                             "GitLab 模式需要 GITLAB_TOKEN；请在当前 CMD/PowerShell "
                             "设置环境变量后重新执行（不会将 Token 保存到 SQLite）")
                     item = _mr_project(input_fn, token)
+                    item["role"] = "CHANGE"
                 if any(r["project"] == item["project"] for r in items):
                     raise BaselineError(
                         "此向导每个项目只能输入一组修订号；多个 MR 合并候选功能仍待开发")
@@ -217,7 +219,9 @@ def run_wizard(args, input_fn=input, output_fn=print):
                         "error_type": type(exc).__name__, "reason": str(exc)[:500]})
                     output_fn("项目准备失败 %s：%s" % (project, exc))
             run_root = getattr(args, "run_root", ".diff-analysis/runs")
-            bundle_root, checkpoint = start_ledger_checkpoint(specs, run_root)
+            roles = {(i["project"], base, head): i.get("role", "CHANGE")
+                     for _, i, _, base, head in usable_items}
+            bundle_root, checkpoint = start_ledger_checkpoint(specs, run_root, roles)
             usable = {(l["project"], l["base"], l["head"])
                       for l in checkpoint["ledgers"]}
             for i, item, repo, base, head in usable_items:
@@ -227,8 +231,9 @@ def run_wizard(args, input_fn=input, output_fn=print):
                 output_fn("[%d/%d] 分析 %s ..." % (i + 1, len(items), project))
                 created, snapshot = False, None
                 try:
-                    snapshot, created = prepare_baseline(
-                        store, project, item["old_version"], repo, base)
+                    if item.get("role") != "EVIDENCE":
+                        snapshot, created = prepare_baseline(
+                            store, project, item["old_version"], repo, base)
                     if item["kind"] == "mr":
                         store.save_candidate({
                             "project_path": project, "mr_url": item["mr_url"],
@@ -260,9 +265,11 @@ def run_wizard(args, input_fn=input, output_fn=print):
                     "new_version": item["new_version"],
                     "base_sha": base, "head_sha": head,
                     "baseline_created": created,
-                    "baseline_status": snapshot["status"] if snapshot else "FAILED",
-                    "candidate_status": "SOURCE_HEAD_ONLY" if item["kind"] == "mr"
-                                        else "LOCAL_COMMIT_COMPARE_NOT_PROMOTED"
+                    "baseline_status": snapshot["status"] if snapshot else (
+                        "NOT_APPLICABLE" if item.get("role") == "EVIDENCE" else "FAILED"),
+                    "candidate_status": ("EVIDENCE_ONLY" if item.get("role") == "EVIDENCE"
+                                         else "SOURCE_HEAD_ONLY" if item["kind"] == "mr"
+                                         else "LOCAL_COMMIT_COMPARE_NOT_PROMOTED")
                 })
             candidates = stitch_cross_project(results)
             report = markdown(results, candidates, meta)
