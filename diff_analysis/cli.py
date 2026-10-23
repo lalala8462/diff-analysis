@@ -25,8 +25,10 @@ def catalog_result(repo, sha, root, cache):
     reverse, unresolved = build_graph(methods, calls)
     return {'project': Path(repo).name, 'head': sha, 'base': sha,
             'changed_files': [], 'changed_methods': [], 'methods': methods,
-            'old_methods': {}, 'calls': calls, 'impact_paths': {},
-            'unresolved': unresolved, 'old_unresolved_count': 0,
+            'old_methods': methods, 'calls': calls, 'old_calls': calls,
+            'impact_paths': {},
+            'unresolved': unresolved, 'old_unresolved': unresolved,
+            'old_unresolved_count': len(unresolved),
             'api_issues': [], 'warnings': skips + [e['path'] for e in errors],
             'incomplete': bool(skips or errors), 'catalog': True}
 
