@@ -257,11 +257,9 @@ def run_wizard(args, input_fn=input, output_fn=print):
             bundle, _ = write_release_bundle(
                 specs, results, candidates, getattr(args, "run_root", ".diff-analysis/runs"),
                 args.db,
-                model_endpoint=getattr(args, "model_endpoint", None),
-                model_name=getattr(args, "model_name", None),
-                allow_remote_model=getattr(args, "allow_remote_model", False),
-                model_key_env=getattr(args, "model_key_env", "DIFF_ANALYSIS_MODEL_API_KEY"),
-                max_model_groups=getattr(args, "max_model_groups", 20))
+                refactoringminer_bin=getattr(args, "refactoringminer_bin", None),
+                codetracker_evidence=getattr(args, "codetracker_evidence", None),
+                attribution_rules=getattr(args, "attribution_rules", None))
             output_json.write_text(json.dumps({
                 "comparisons": comparisons, "catalog_revision": store.revision(),
                 "results": results, "cross_candidates": candidates,
@@ -269,6 +267,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                            "verified merged releases."
             }, ensure_ascii=False, indent=2), encoding="utf-8")
     output_fn("\n新版候选需求与证据包：" + str(bundle))
+    output_fn("可交给本地 AI 的完整报告：" + str(bundle / "ai_review.md"))
     output_fn("\n完成。Markdown 报告：" + str(dest))
     output_fn("JSON 报告：" + str(output_json))
     output_fn("跨项目候选关联：%d 条（不是已证实业务依赖）" % len(candidates))

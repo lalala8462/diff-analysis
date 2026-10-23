@@ -44,28 +44,25 @@ def parser():
     remote.add_argument('--token-env', default='GITLAB_TOKEN', help='Environment variable name, not token value')
     remote.add_argument('--allow-http', action='store_true', help='Only for an explicitly trusted internal network')
     for child in (local, remote):
-        child.add_argument('--model-endpoint', default=None,
-                           help='Opt-in compatible chat/completions URL; uploads code context')
-        child.add_argument('--model-name', default=None)
-        child.add_argument('--model-key-env', default='DIFF_ANALYSIS_MODEL_API_KEY')
-        child.add_argument('--allow-remote-model', action='store_true',
-                           help='Explicit consent to send source-code context to remote HTTPS model')
-        child.add_argument('--max-model-groups', type=int, default=20)
         child.add_argument('--output', default='report.md')
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
         child.add_argument('--run-root', default='.diff-analysis/runs', help='Timestamped evidence report directory')
+        child.add_argument('--refactoringminer-bin', default=None,
+                           help='Optional local RefactoringMiner executable (-bc JSON)')
+        child.add_argument('--codetracker-evidence', default=None,
+                           help='Optional normalized CodeTracker bridge-v1 JSON file')
+        child.add_argument('--attribution-rules', default=None,
+                           help='Exact-SHA Hunk attribution decisions JSON or per-project directory')
         child.add_argument('--db', default='.diff-analysis/state.sqlite3', help='SQLite run index (separate from baseline facts)')
     interactive = sub.add_parser('wizard', help='Interactive multi-project Git revision comparison (CMD/PowerShell)')
     interactive.add_argument('--db', default='.diff-analysis/state.sqlite3')
     interactive.add_argument('--output', default='report.md')
     interactive.add_argument('--json-output', default='review.json')
     interactive.add_argument('--run-root', default='.diff-analysis/runs')
-    interactive.add_argument('--model-endpoint', default=None)
-    interactive.add_argument('--model-name', default=None)
-    interactive.add_argument('--model-key-env', default='DIFF_ANALYSIS_MODEL_API_KEY')
-    interactive.add_argument('--allow-remote-model', action='store_true')
-    interactive.add_argument('--max-model-groups', type=int, default=20)
+    interactive.add_argument('--refactoringminer-bin', default=None)
+    interactive.add_argument('--codetracker-evidence', default=None)
+    interactive.add_argument('--attribution-rules', default=None)
     baseline_cli.configure(sub)
     return p
 
@@ -118,11 +115,11 @@ def run(args):
         print('Repositories:', len(results), '| Modified methods:', sum(len(r['changed_methods']) for r in results), '| Cross-project candidates:', len(candidates))
         bundle, _ = write_release_bundle(
             specs, results, candidates, args.run_root, args.db,
-            model_endpoint=args.model_endpoint, model_name=args.model_name,
-            allow_remote_model=args.allow_remote_model,
-            model_key_env=args.model_key_env,
-            max_model_groups=args.max_model_groups)
+            refactoringminer_bin=args.refactoringminer_bin,
+            codetracker_evidence=args.codetracker_evidence,
+            attribution_rules=args.attribution_rules)
         print('Timestamped evidence & candidate groups:', bundle)
+        print('Offline AI-ready report:', bundle / 'ai_review.md')
         print('CAUTION: Static analysis is not a proof of compatibility.')
 
 

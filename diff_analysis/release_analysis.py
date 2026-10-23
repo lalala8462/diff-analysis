@@ -10,6 +10,10 @@ from pathlib import Path
 
 from .gitops import git, diff_files
 from .scanner import method_changes
+from .refactoring_enrichment import run_refactoringminer, load_codetracker_bridge, attach_evolution
+from .element_history import build_identity_chains, attach_chains
+from .extract_assessment import assess_extractions
+from .attribution_rules import apply_attribution_rules
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$", re.M)
@@ -109,6 +113,28 @@ def _file_commit_candidates(repo, base, head, paths, commit_lookup):
     return [sha for sha in dict.fromkeys(raw.splitlines()) if sha in commit_lookup][:50]
 
 
+def _line_blame(repo, head, path, start, count, commits):
+    """Best-effort Hunk->last-touch attribution for surviving new lines.
+
+    Blame does not prove task identity or explain deleted lines. Never replace
+    the file-level evidence when a Hunk is ambiguous or contains multiple issues.
+    """
+    if not start or not count or count > 120 or not path:
+        return [], []
+    try:
+        raw = _decode(git(repo, "blame", "--line-porcelain", "-L",
+                          "%d,+%d" % (start, count), head, "--", path))
+    except RuntimeError:
+        return [], []
+    touched = []
+    for line in raw.splitlines():
+        match = re.match(r"^([0-9a-f]{40,64}) (\d+) (\d+) (\d+)$", line)
+        if match and match.group(1) in commits and match.group(1) not in touched:
+            touched.append(match.group(1))
+    keys = sorted({key for sha in touched for key in commits[sha]["issue_keys"]})
+    return touched, keys
+
+
 def _method_overlap(methods, path, start, count):
     upper = start + max(count, 1) - 1
     return sorted(sym for sym, m in methods.items()
@@ -174,6 +200,8 @@ def final_diff_ledger(repo, project, base, head, review=None):
                 state = "NEEDS_REVIEW"
             else:
                 state = "NEEDS_REVIEW"
+            line_commits, line_issues = _line_blame(
+                repo, head, path, new_start, new_count, commits) if not synthetic and not deleted else ([], [])
             changes = {
                 "id": "D-" + identifier(project, base, head, old_path, path, index,
                                        old_start, old_count, new_start, new_count),
@@ -183,8 +211,12 @@ def final_diff_ledger(repo, project, base, head, review=None):
                 "old_range": {"start": old_start, "count": old_count},
                 "new_range": {"start": new_start, "count": new_count},
                 "symbols": symbols, "commit_candidates": candidates,
-                "issue_candidates": all_issues, "provenance_status":
-                    "FILE_ONLY_CANDIDATE" if candidates else "UNKNOWN",
+                "issue_candidates": all_issues,
+                "line_commit_candidates": line_commits,
+                "line_issue_candidates": line_issues,
+                "provenance_status": (
+                    "LINE_BLAME_CANDIDATE" if line_commits else
+                    "FILE_ONLY_CANDIDATE" if candidates else "UNKNOWN"),
                 "before": _slice_context(before, old_start, old_count) if old_start else [],
                 "after": _slice_context(after, new_start, new_count) if new_start else [],
                 "context_status": {"old": before_err, "new": after_err},
@@ -202,27 +234,43 @@ def final_diff_ledger(repo, project, base, head, review=None):
 def candidate_groups(ledgers):
     """Conservative grouping: a unique explicit issue key is the only automatic merge."""
     grouped = defaultdict(list)
-    group_meta = {}
+    group_meta = defaultdict(set)
     for ledger in ledgers:
         for change in ledger["final_changes"]:
-            keys = change["issue_candidates"]
-            # File-level commit history is weak; only a single issue key is safe enough
-            # to propose a grouping, never as a confirmed business requirement.
+            # Prefer last-touch evidence for this final Hunk, which can
+            # distinguish unrelated edits to the same file. If blame finds
+            # commits without a unique issue, DO NOT fall back to a misleading
+            # whole-file label.
+            manual = change.get("manual_attribution")
+            line_commits = change.get("line_commit_candidates", [])
+            keys = (change.get("line_issue_candidates", [])
+                    if line_commits else change["issue_candidates"])
+            if manual:
+                keys = manual["issue_keys"]
             key = ("ISSUE", keys[0]) if len(keys) == 1 else ("SINGLE", change["id"])
             grouped[key].append(change)
-            group_meta[key] = "COMMIT_MESSAGE_ISSUE_CANDIDATE" if key[0] == "ISSUE" else "UNASSIGNED"
+            group_meta[key].add(
+                "HUMAN_EXACT_SHA_DIFF" if manual and len(keys) == 1
+                else "MIXED_HUNK_REVIEW" if manual and len(keys) > 1
+                else "LINE_BLAME_ISSUE_CANDIDATE" if key[0] == "ISSUE" and line_commits
+                else "COMMIT_MESSAGE_ISSUE_CANDIDATE" if key[0] == "ISSUE"
+                else "AMBIGUOUS_OR_UNASSIGNED")
     groups = []
     by_change = {}
     for key, changes in sorted(grouped.items(), key=lambda kv: str(kv[0])):
         gid = "G-" + identifier(key[0], key[1], sorted(c["id"] for c in changes))
         groups.append({
             "id": gid, "label": ("候选任务 " + key[1]) if key[0] == "ISSUE" else "未归属变化",
-            "status": "CANDIDATE", "group_basis": group_meta[key],
+            "status": "CANDIDATE",
+            "group_basis": (next(iter(group_meta[key])) if len(group_meta[key]) == 1
+                            else "MIXED_ATTRIBUTION_EVIDENCE"),
+            "evidence_bases": sorted(group_meta[key]),
             "issue_key": key[1] if key[0] == "ISSUE" else None,
             "change_ids": [c["id"] for c in changes],
             "projects": sorted(set(c["project"] for c in changes)),
-            "summary": "依据提交说明的唯一任务编号合组，需人工确认"
-                       if key[0] == "ISSUE" else "暂不自动归属需求；逐项审阅"
+            "summary": ("存在单一任务编号的归属证据（逐行提交或人工），需确认是否同一需求"
+                        if key[0] == "ISSUE" else
+                        "无法唯一归属，保留单独候选；一个 Hunk 可能包含多个任务")
         })
         for change in changes:
             by_change[change["id"]] = gid
@@ -358,14 +406,90 @@ def consumer_candidates(ledgers, by_change, cross_candidates):
                 "limitation": "Unmodified consumer or no group mapping; confirm actual type/RPC"})
     return findings
 
-def assemble_release(specs, reviews=None, cross_candidates=None):
-    """specs: [(git_repo_path, project, old_commit, new_commit)]."""
-    ledgers = [final_diff_ledger(repo, project, base, head,
-                                next((r for r in (reviews or [])
-                                      if r["project"] == project), None))
-               for repo, project, base, head in specs]
+def assemble_release(specs, reviews=None, cross_candidates=None,
+                     refactoringminer_bin=None, codetracker_evidence=None,
+                     attribution_rules=None):
+    """The optional tools only enrich evidence; net Diff always remains intact."""
+    ledgers = []
+    for repo, project, base, head in specs:
+        ledger = final_diff_ledger(
+            repo, project, base, head,
+            next((r for r in (reviews or []) if r["project"] == project), None))
+        ref_events, ref_warnings = run_refactoringminer(
+            repo, base, head, refactoringminer_bin) if refactoringminer_bin else ([], [])
+        tracker_events, tracker_warnings = load_codetracker_bridge(
+            codetracker_evidence, project, base, head)
+        extract_warnings = assess_extractions(repo, ref_events)
+        chain_records, chain_warnings = build_identity_chains(
+            repo, base, head, ref_events) if ref_events else ([], [])
+        attach_evolution(ledger, ref_events + tracker_events)
+        attach_chains(ledger, chain_records)
+        attribution_warnings = apply_attribution_rules(ledger, attribution_rules)
+        ledger["enrichment"] = {
+            "refactoringminer_status": (
+                "NOT_CONFIGURED" if not refactoringminer_bin else
+                "PARTIAL" if ref_warnings else "COMPLETED"),
+            "codetracker_status": (
+                "NOT_CONFIGURED" if not codetracker_evidence else
+                "PARTIAL" if tracker_warnings else "IMPORTED"),
+            "warnings": (ref_warnings + tracker_warnings + extract_warnings
+                         + chain_warnings + attribution_warnings),
+            "element_chain_count": len(chain_records),
+            "mixed_behavior_candidates": sum(
+                1 for ev in ref_events
+                if (ev.get("behavior_assessment") or {}).get("status")
+                    == "POSSIBLE_MIXED_BEHAVIOR")
+        }
+        ledgers.append(ledger)
     groups, by_change = candidate_groups(ledgers)
     intersections = group_intersections(ledgers, groups, by_change, reviews, cross_candidates)
+    existing_links = {(x.get("from_group"), x.get("to_group"), x.get("kind"))
+                      for x in intersections}
+    for ledger in ledgers:
+        for chain in ledger.get("element_chains", []):
+            gs = sorted({by_change[cid] for cid in
+                         chain["old_change_ids"] + chain["new_change_ids"]
+                         if cid in by_change})
+            if len(gs) > 20:
+                ledger["enrichment"]["warnings"].append({
+                    "type": "ELEMENT_CHAIN_GROUP_LIMIT"})
+                continue
+            for i, ga in enumerate(gs):
+                for gb in gs[i + 1:]:
+                    key = (ga, gb, "ELEMENT_IDENTITY_CHAIN_CANDIDATE")
+                    if key not in existing_links:
+                        existing_links.add(key)
+                        intersections.append({
+                            "id": "X-" + identifier(*key), "from_group": ga,
+                            "to_group": gb, "kind": key[2], "status": "CHECK_TOGETHER",
+                            "evidence": [{"chain_id": chain["id"],
+                                          "status": chain["status"]}],
+                            "limitation": "Element identity candidate is not behavior equivalence"
+                        })
+        for ref in ledger.get("evolution_relations", []):
+            gs = sorted({by_change[cid] for cid in
+                         ref["old_change_ids"] + ref["new_change_ids"]
+                         if cid in by_change})
+            if len(gs) > 20:
+                ledger["enrichment"]["warnings"].append({
+                    "type": "EVOLUTION_GROUPS_TRUNCATED", "count": len(gs)})
+                continue
+            for i, ga in enumerate(gs):
+                for gb in gs[i+1:]:
+                    key = (ga, gb, "REFACTORING_EVOLUTION_CANDIDATE")
+                    if key in existing_links:
+                        continue
+                    existing_links.add(key)
+                    intersections.append({
+                        "id": "X-" + identifier(*key), "from_group": ga,
+                        "to_group": gb, "kind": key[2],
+                        "status": "CHECK_TOGETHER", "evidence": [{
+                            "refactoring_id": ref["id"], "type": ref["kind"],
+                            "source": ref["source"],
+                            "confidence": ref["confidence"]}],
+                        "limitation": "Refactoring evidence does not prove shared requirement or behavior equivalence"
+                    })
+    intersections.sort(key=lambda item: item["id"])
     consumers = consumer_candidates(ledgers, by_change, cross_candidates)
     names = [l["project"] for l in ledgers]
     duplicate_warnings = (
@@ -379,7 +503,6 @@ def assemble_release(specs, reviews=None, cross_candidates=None):
         "ledgers": ledgers, "groups": groups,
         "cross_group_checks": intersections,
         "consumer_candidates": consumers,
-        "model_status": "NOT_INVOKED",
         "warnings": duplicate_warnings + [
             "File-level commit attribution is only a candidate",
             "Group membership is not confirmed requirement identity",
