@@ -362,8 +362,8 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 | P1-B | CHANGE/EVIDENCE 两侧固定 SHA（EVIDENCE 可同 SHA）；候选 Java 关系边、未解析调用、多来源传播、旧版消费者与连接点 | Java 完整类型／包版本绑定、跨服务调用确认、规模验证 |
 | P1-C | 审核问题、差异双端代码窗口、证据清单、范围／轮次／字节受限补证、增量文件和无进展停止 | 方法／契约自动扩展与精确必需证据检查、复杂绑定取证和大型分卷 |
 | P2-A | 人工 ExpectedGoal／RulePoint、HUMAN／AI 独立评审结论、结构引用校验、依据复核记录、目标／证据变更后的定向失效 | 外部 AI 的真实阅读范围无法自动确认；内容是否支持结论需要独立人工核实 |
-| P2-B | KEEP／JOINT_REVIEW 候选建议、Hunk 新版行细分、人工移动／合组、未分配单元与需重审标记 | 基于语义的 SPLIT／MERGE 自动建议、精确旧版子范围、修改后局部图增量重算 |
-| 持续验收 | 本地 Git 构造用例、失败／角色／图传播／补证与人工修订测试已编写 | Windows/JDK 8/17、真实 RefactoringMiner/GitLab、预标注误报率及 L 档压测未执行 |
+| P2-B | KEEP／JOINT_REVIEW 候选建议、Hunk 新版行细分、人工拆组／移动／合组、未分配单元与需重审标记 | 基于语义的 SPLIT／MERGE 自动建议、精确旧版子范围、修改后局部图增量重算 |
+| 持续验收 | 本地 Git 构造用例、失败／角色／图传播／补证与人工拆组／合组测试已编写 | Windows/JDK 8/17、真实 RefactoringMiner/GitLab、预标注误报率及 L 档压测未执行 |
 
 `analysis.json` 保留底账；`review_state.json` 和 `revisions/` 记录独立修订，不反向覆盖原 Git 事实。新增命令与输入示例以 [Windows 指南](WINDOWS_SETUP.md) 为准。
 
