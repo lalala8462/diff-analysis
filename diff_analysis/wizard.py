@@ -264,6 +264,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                            "verified merged releases."
             }, ensure_ascii=False, indent=2), encoding="utf-8")
     output_fn("\n新版候选需求与证据包：" + str(bundle))
+    output_fn("可交给本地 AI 的完整报告：" + str(bundle / "ai_review.md"))
     output_fn("\n完成。Markdown 报告：" + str(dest))
     output_fn("JSON 报告：" + str(output_json))
     output_fn("跨项目候选关联：%d 条（不是已证实业务依赖）" % len(candidates))

@@ -107,6 +107,7 @@ def run(args):
         bundle, _ = write_release_bundle(
             specs, results, candidates, args.run_root, args.db)
         print('Timestamped evidence & candidate groups:', bundle)
+        print('Offline AI-ready report:', bundle / 'ai_review.md')
         print('CAUTION: Static analysis is not a proof of compatibility.')
 
 
