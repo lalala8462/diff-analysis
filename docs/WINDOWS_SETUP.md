@@ -1,6 +1,6 @@
-# Windows 原生安装与 GitLab MR 接入（PowerShell 5.1 / 7）
+# 安装与启动指南（Windows PowerShell 5.1 / 7）
 
-> 适用：Windows 10/11，**不需要 WSL、Docker、MySQL**。当前版本为 P0 命令行分析工具，没有 Web 界面或 LLM 自动业务评审。按本文执行后生成 `report.md` 和 `review.json`。
+> 文档修订：2026-10-23 16:46:15 +08:00。适用 Windows 10/11，无需 WSL、Docker、MySQL。本文统一维护安装、更新、启动与命令用法，末尾补充其他平台入口。当前为本地命令行与离线报告工具，不连接模型接口；优先阅读日期时间运行目录中的报告。变化统一记录于 [CHANGELOG](../CHANGELOG.md)，能力与设计边界以 [README](../README.md) 为准。
 
 ## 1. 安装依赖
 
@@ -33,6 +33,15 @@ py -3 -m venv .venv
 
 使用 ` .venv\Scripts\python.exe ` 直接调用，不需要激活脚本，也不需要更改 PowerShell 执行策略。若环境不能访问 PyPI，可在符合 Python 版本要求的前提下直接使用 `py -3 -m diff_analysis` 从仓库根目录启动（此项目运行时主要依赖 Python 标准库）。
 
+### 更新已有仓库
+
+先处理自身未提交改动，再更新代码并执行测试：
+
+```powershell
+git pull --ff-only origin main
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
 ## 3. 创建 GitLab 只读 Token
 
 在公司的自建 GitLab 中创建 **Personal Access Token** 或具有对应仓库权限的 **Project/Group Access Token**：
@@ -57,7 +66,27 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
 
 程序会从 `GITLAB_TOKEN` 读取凭据，访问 GitLab API，并在内部建立临时 Git 认证包装器。**Windows 自动使用 `.cmd`，Linux/macOS 使用 `.sh`**；两者都通过 Python 获取环境中的 Token，不将 Token 写进临时脚本或 Git CLI 参数。临时文件用完自动清理，Git Credential Manager 不会弹框或保存该 Token。
 
-## 4. 通过多个 GitLab MR 运行联合分析
+## 4. 选择分析入口
+
+多项目交互向导可输入本地分支、Tag 或 SHA，并在执行前确认固定 SHA；也可添加 GitLab MR：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis wizard
+```
+
+也可双击仓库根目录的 [start-wizard.cmd](../start-wizard.cmd)。按提示逐项添加本地 Git 项目或未合并 GitLab MR，输入各自的旧／新分支、Tag 或 SHA，输入 0 完成清单，再确认固定 SHA 后执行。`owner` 仅为可选责任人备注。GitLab 凭据从当前会话的 `GITLAB_TOKEN` 读取，安全输入方法见第 3 节。
+
+向导目前拒绝同 SHA 项目；未修改消费者需使用下述非交互 `--catalog` 入口。重构工具及人工归属参数见 [README](../README.md#5-可选-java-重构与人工归属)。
+
+查看命令与参数：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis --help
+.\.venv\Scripts\python.exe -m diff_analysis wizard --help
+.\.venv\Scripts\python.exe -m diff_analysis review-local --help
+```
+
+### 通过多个 GitLab MR 运行联合分析
 
 把下方域名、项目路径和 MR 编号换成真实值：
 
@@ -66,8 +95,7 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
   --allowed-host gitlab.example.cn `
   --mr "https://gitlab.example.cn/team/spms-back/-/merge_requests/101" `
   --mr "https://gitlab.example.cn/team/adpts/-/merge_requests/52" `
-  --output ".\report.md" `
-  --json-output ".\review.json"
+  --run-root ".\.diff-analysis\runs"
 ```
 
 - `--allowed-host` 只写 GitLab **域名**（例如 `gitlab.example.cn`），不要写 `https://` 或仓库路径。
@@ -76,18 +104,19 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
 - 内网 GitLab 若只能使用 HTTP，必须显式附加 `--allow-http`。这会明文传输凭据，**仅在已确认可信的隔离网络中使用**，优先启用 HTTPS。
 - 支持将未修改、但可能是调用方的**本地其他仓库**加入静态扫描：重复追加 `--catalog "D:\repos\other-service@<完整CommitSHA>"`，该仓库必须已经存在且含有对应 SHA。
 
-分析成功后生成：
+成功后终端打印独立运行目录及 `ai_review.md` 的完整路径。默认每次创建 `.diff-analysis/runs/<UTC日期时间>-<随机标识>/`，例如 `20261023T050000Z-a1b2c3d4` 对应北京时间 2026-10-23 13:00：
 
 | 文件 | 内容 |
 | --- | --- |
-| `report.md` | 人工阅读的 Markdown 变更报告（受影响方法、调用链、API 版本规则、待确认跨项目调用候选） |
-| `review.json` | 机器可读的结构化报告，便于后续对接 AI、Web 页面或 CI |
+| `report.md` | 候选需求组、静态交叉线索和覆盖缺口，优先作为人工阅读入口 |
+| `ai_review.md` | 分组与代码上下文，供用户在工具外交给本地 AI |
+| `analysis.json` | 最终差异、来源候选、归属和可选结构映射等资料 |
+| `evidence/D-*.md` | 单条差异、固定版本和两侧代码窗口 |
+| `group_reports/G-*.md` | 单组提交、变化、代码与交叉线索 |
 
-输出文件是当前工作目录中的路径。可用 VS Code、IDEA 或 Markdown 预览器打开：
+用 VS Code、IDEA 或 Markdown 预览器打开终端所打印的运行目录内文件。较大批次可逐组交给外部 AI；导出成功不代表外部 AI 已完整阅读，必要方法或消费者缺失时应保留判断限制。
 
-```powershell
-code .\report.md
-```
+原 `--output` 默认仍在当前工作目录生成旧格式 `report.md`，显式 `--json-output` 时另生成兼容 JSON；向导默认还生成 `review.json`。这些兼容输出不替代独立目录的证据报告，不要因当前目录存在同名文件就认定本次分析完整。
 
 运行完成后清理当前会话的 Token：
 
@@ -97,7 +126,7 @@ Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
 
 ## 5. 不依赖 GitLab：先分析本地 Git 项目
 
-需要一对**完整 Commit SHA**（不是分支名或短 SHA）：
+非交互入口需要一对**完整 Commit SHA**（40／64 位，按仓库对象格式；不是分支名或短 SHA）。先用 `rev-parse` 解析：
 
 ```powershell
 git -C "D:\repos\spms-back" rev-parse main
@@ -105,13 +134,37 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
 
 .\.venv\Scripts\python.exe -m diff_analysis review-local `
   --repo "D:\repos\spms-back" `
-  --base "<完整40位CommitSHA>" `
-  --head "<完整40位CommitSHA>" `
-  --output ".\local-report.md" `
-  --json-output ".\local-review.json"
+  --base "<完整旧CommitSHA>" `
+  --head "<完整新CommitSHA>" `
+  --run-root ".\.diff-analysis\runs"
 ```
 
-该方式很适合先校验 Java 解析、反向调用图及报告格式，无需 GitLab Token。
+该方式无需 GitLab Token，输出位置与上一节相同。可用 `--project` 指定报告中的项目标识，并追加固定 SHA 的未修改消费者：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis review-local `
+  --repo "D:\repos\spms-back" `
+  --project "local/spms-back" `
+  --base "<完整旧CommitSHA>" `
+  --head "<完整新CommitSHA>" `
+  --catalog "D:\repos\consumer-service@<消费者完整CommitSHA>" `
+  --run-root ".\.diff-analysis\runs"
+```
+
+不需要额外消费者时省略 `--catalog`。该入口仍不是目标设计中的统一两侧版本输入，不能据此认定消费者的实际部署版本。
+
+### 项目目录与固定 SHA 基线
+
+以下是现有辅助命令，不负责自动合并或晋升基线：
+
+| 命令 | 用途 |
+| --- | --- |
+| `catalog-add` / `catalog-list` | 人工登记／查看项目范围 |
+| `baseline-local` / `baseline-mr` | 创建本地固定版本快照，或记录 MR 目标基线与来源 HEAD 候选 |
+| `baseline-status` | 查看快照、候选及扫描缺口 |
+| `baseline-verify` | 人工确认固定版本身份和扫描范围；不代表业务正确或依赖完整 |
+
+例如查看参数：`.\.venv\Scripts\python.exe -m diff_analysis baseline-local --help`。`baseline-verify` 需要显式 `--acknowledge`，有扫描警告的快照不能直接确认。普通版本比较不要求先执行这些命令。
 
 ## JDK 8 下 AST 扫描器编译失败的处理
 
@@ -123,7 +176,7 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
 
 说明当前 JDK 编译器 API 没有被正确找到。JDK 8 的相关 API 通常位于完整 JDK 的 lib/tools.jar 中；JRE 目录没有这个文件。
 
-本次已修正：自动判断 javac 版本；使用 JDK 8 时自动把 tools.jar 加入编译与运行 classpath；找不到时输出可操作的错误信息。**推荐让分析工具独立使用 JDK 17，即使被分析项目仍用 Java 8。**
+扫描器会判断 javac 版本；使用 JDK 8 时将 tools.jar 加入编译与运行 classpath，找不到时输出错误信息。分析工具可以独立使用完整 JDK 17，即使被分析项目仍用 Java 8；可选 RefactoringMiner 3.x 的运行环境另需 Java 17+。
 
 请在 PowerShell 中检查：
 
@@ -147,7 +200,7 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
     javac -version
     .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-**注**：Windows 的 javac 报错原先还可能出现中文乱码；修正后的编译命令统一按 UTF-8 输出诊断。
+javac 编译诊断按 UTF-8 输出。当前入口先扫描后生成新底账，JDK／扫描器整体失败仍可能阻断运行；底账先落盘与阶段隔离是待实施设计，不能根据本文推定已有完整降级报告。
 
 ## 6. 故障排查
 
@@ -162,12 +215,16 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
 | `Pinned commit unavailable` | MR fork / 合并引用无法获取；需要能读取来源项目的 commit |
 | Windows 文件名无法落盘 | 工具记录 `unsupported source path`，报告标记为不完整；不会悄悄忽略 |
 | 修改 Java 后方法没有出现在影响报告 | 当前只做保守 AST 静态分析，不保证解析 Spring 代理、反射、所有方法调用 |
-| PowerShell 续行错误 | 反引号 `\` 必须是每个续行的**最后一个字符**，后面不要有空格 |
+| PowerShell 续行错误 | 反引号必须是每个续行的最后一个字符，后面不要有空格；也可合并为单行 |
 
 ## 7. 当前限制与安全边界
 
-- P0 能分析多 MR，但**尚不验证多个 MR 临时合并后的组合树和冲突**。
+- 可分析多个 MR，但尚不验证多个 MR 临时合并后的组合树和冲突。
 - 尚不自动接入 ZK、RabbitMQ、Redis、ES 或完整数据库字段级依赖。
 - **不会自动发现所有未知程序 D**。可手动用 `--catalog` 纳入未修改仓库；跨项目按方法名匹配只算候选关系。
-- 尚无 AI 业务语义审查 / Web UI。报告只代表当前可见代码和静态证据，不能宣称完整或安全。
-- 目前 Windows 功能有自动化 CI 覆盖；**实际公司内网 GitLab 的 Token、TLS、代理仍需在你的环境中测试**。
+- 程序不运行模型，没有 Web UI；只导出离线资料。补证请求、完整结论导入与重审仍是待实施设计，报告不能宣称业务完整或安全。
+- 单元测试范围见 [CHANGELOG](../CHANGELOG.md)；公司内网 GitLab 的 Token、TLS、代理仍需实际验证。网络不通时同时检查本地代理配置，不关闭证书校验。
+
+## 8. 其他平台入口
+
+Linux/macOS 可用 `python3 -m pip install -e .` 安装，再用 `python3 -m diff_analysis review-local --repo /path/to/repo --base <完整旧SHA> --head <完整新SHA>` 运行；参数语义与上文一致，续行语法按所用 Shell 调整。
