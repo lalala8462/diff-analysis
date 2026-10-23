@@ -207,6 +207,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                         repo = clone_mr(live, root / ("clone-%d" % i), token)
                         base, head = live["start"], live["head"]
                         meta[project] = {"url": live["url"], "head": head}
+                        item["_diff_base"] = live["base"]
                     usable_items.append((i, item, repo, base, head))
                     specs.append((repo, project, base, head))
                 except (BaselineError, GitError, OSError, ValueError) as exc:
@@ -233,8 +234,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                             "project_path": project, "mr_url": item["mr_url"],
                             "old_version": item["old_version"],
                             "new_version": item["new_version"],
-                            "target_sha": base, "diff_base_sha": live["base"]
-                                if i == len(items) - 1 else base,
+                            "target_sha": base, "diff_base_sha": item["_diff_base"],
                             "source_head_sha": head,
                             "source_tree_sha": git_tree(repo, head),
                             "state": "SOURCE_HEAD_ONLY"
