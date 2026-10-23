@@ -301,6 +301,8 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 
 这些是最新代码中的可选能力，不要求每次分析安装外部工具，不作为关系图完整性或评审闭环已经完成的证明。
 
+演进关联优先使用 Hunk 范围；当方法随文件改名但没有对应行差异时，仅在重构两端路径吻合同一条 Git 改名记录后补文件级关联。输出 mapping_basis，并以 RENAMED_FILE_CANDIDATE 区别于精确 Hunk 匹配，原始 diff_id 和范围保持不变。纯改名适用同一规则，不因旧侧路径单独吻合就推定另一侧关联。
+
 - `--refactoringminer-bin` 指定本地可执行文件。程序以 -bc repo baseSHA headSHA -json output 收集事件；多提交事件的行号不能直接当作最终两侧行号，按关联状态和限制阅读。工具失败记录 enrichment 警告并保留基础差异。
 - `--codetracker-evidence` 接收以下自定义桥接 JSON 或项目目录；目录按 project 中 / 替换为 _ 查找。它不是 CodeTracker 原生格式，也不自动调用其 Java SDK。
 

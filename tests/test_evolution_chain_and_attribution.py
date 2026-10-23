@@ -141,7 +141,9 @@ class ExtractReviewTests(unittest.TestCase):
             repo, ev = self._make(temp, "2 + 3")
             result = assess_extract_event(repo, ev)
             self.assertEqual("TEXTUAL_EXTRACTION_CANDIDATE", result["status"])
-            self.assertIn("not behavior", result["limitation"])
+            self.assertIn("not prove behavior equivalence", result["limitation"].lower())
+            self.assertIn("purity", result["limitation"])
+            self.assertIn("call-site correctness", result["limitation"])
 
     def test_caller_condition_change_detected_even_if_extracted_body_is_identical(self):
         with tempfile.TemporaryDirectory() as temp:

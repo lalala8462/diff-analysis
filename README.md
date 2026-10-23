@@ -130,6 +130,8 @@ git pull --ff-only origin main
 
 Extract Method 检查是文本启发式：`TEXTUAL_EXTRACTION_CANDIDATE` 不证明纯重构；新增条件、运算符或常量可能产生 `POSSIBLE_MIXED_BEHAVIOR`，也可能需要人工排除误报。具体安装见 [RefactoringMiner 官方说明](https://github.com/tsantalis/RefactoringMiner/blob/master/documentation/how-to.md)。
 
+Git 将跨类移动识别为文件重命名时，方法体可能没有行差异。两侧路径吻合同一条改名记录时，工具保留文件级演进候选 RENAMED_FILE_CANDIDATE，并以 mapping_basis 区分 Hunk 范围和文件关联；该候选不表示方法修改行已被精确定位。
+
 ### CodeTracker：标准化桥接导入
 
 ~~~powershell
@@ -174,10 +176,12 @@ Extract Method 检查是文本启发式：`TEXTUAL_EXTRACTION_CANDIDATE` 不证�
 
 ## 8. 最近一次验证
 
-2026-10-23，在 Windows、Python 3.14 环境运行完整单元测试：50 项，47 项通过，3 项失败。测试时源码及测试文件与远程 f47b976 一致；本次仅调整文档，没有修改这些实现。失败项为：
+2026-10-23，在 Windows、Python 3.14 环境重新运行完整单元测试：**52 项全部通过**。包含此前 3 项失败的修复，以及新增的纯改名和错误路径匹配边界测试。
 
-- test_same_body_is_only_textual_candidate：限制说明的文字断言不匹配。
-- test_move_method_across_classes_maps_both_files：未得到预期的跨类移动关联。
-- test_mixed_issue_commit_not_unconditionally_grouped：分组依据与测试预期不一致。
+此前失败的原因和处理：
 
-因此当前版本不能标为全部测试通过；这些测试也不包含真实 RefactoringMiner 可执行文件、公司 GitLab 集成或业务影响效果验收。
+- test_same_body_is_only_textual_candidate：测试仍匹配旧文案；现在核对“不证明行为等价、纯度或调用点正确性”的限制含义。
+- test_move_method_across_classes_maps_both_files：Git 改名中的方法体没有行差异，被原 Hunk 相交规则漏掉；增加双端路径校验后的文件级候选，保留精确范围匹配优先和原始底账。
+- test_mixed_issue_commit_not_unconditionally_grouped：测试仍期待旧 UNASSIGNED 标签；现在检查 AMBIGUOUS_OR_UNASSIGNED、独立保留变化、无确定任务号且底账不丢失。
+
+这些测试不包含真实 RefactoringMiner 可执行文件、公司 GitLab 集成或业务影响效果验收，也不代表第 6 节的设计缺口已全部补齐。

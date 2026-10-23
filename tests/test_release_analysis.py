@@ -72,9 +72,14 @@ class ReleaseEvidenceTests(unittest.TestCase):
             commit(repo, "A.java", "class A { int a; }\n", "PAY-13 and PAY-14 mixed")
             head = commit(repo, "B.java", "class B { int b; }\n", "PAY-13 and PAY-14 mixed")
             evidence = final_diff_ledger(repo, "rhf/pay", base, head)
-            groups, _ = candidate_groups([evidence])
+            groups, assigned = candidate_groups([evidence])
             self.assertEqual(2, len(groups))
-            self.assertTrue(all(g["group_basis"] == "UNASSIGNED" for g in groups))
+            self.assertEqual({c["id"] for c in evidence["final_changes"]}, set(assigned))
+            for group in groups:
+                self.assertEqual("AMBIGUOUS_OR_UNASSIGNED", group["group_basis"])
+                self.assertIsNone(group["issue_key"])
+                self.assertEqual(1, len(group["change_ids"]))
+                self.assertEqual("CANDIDATE", group["status"])
 
     def test_renamed_file_has_file_level_event(self):
         with tempfile.TemporaryDirectory() as root:

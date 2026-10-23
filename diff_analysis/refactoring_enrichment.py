@@ -167,8 +167,8 @@ def _overlaps(change, location, side):
     path = change["old_path"] if side == "old" else change["path"]
     r = change["old_range"] if side == "old" else change["new_range"]
     if r["count"] == 0:
-        # Pure Git R100 has no textual Hunk but still has a file-level event.
-        return change["file_status"].startswith("R") and location["path"] == path
+        # 文件级改名不代表行范围重叠，交由两侧路径校验后关联。
+        return False
     return location["path"] == path and (
         location["start"] <= r["start"] + r["count"] - 1 and
         location["end"] >= r["start"])
@@ -183,6 +183,20 @@ def attach_evolution(ledger, events):
                        if _overlaps(c, event["old"], "old")]
             new_ids = [c["id"] for c in ledger["final_changes"]
                        if _overlaps(c, event["new"], "new")]
+            basis = {"old": "HUNK_RANGE" if old_ids else "UNMATCHED",
+                     "new": "HUNK_RANGE" if new_ids else "UNMATCHED"}
+            # Git 可能只将类名变化列为 Hunk，未改动的方法仍随文件一起移动。
+            # 仅在重构两端路径吻合同一条改名记录时，补充文件级候选。
+            renamed_ids = [c["id"] for c in ledger["final_changes"]
+                           if c["file_status"].startswith("R")
+                           and c["old_path"] == event["old"]["path"]
+                           and c["path"] == event["new"]["path"]]
+            if not old_ids and renamed_ids:
+                old_ids = renamed_ids
+                basis["old"] = "RENAMED_FILE"
+            if not new_ids and renamed_ids:
+                new_ids = renamed_ids
+                basis["new"] = "RENAMED_FILE"
         else:
             # Multi-commit intermediate line numbers must NOT be compared with
             # base/head line numbers. Only paths are safe as a weak hint.
@@ -190,6 +204,8 @@ def attach_evolution(ledger, events):
                        if c["old_path"] == event["old"]["path"]]
             new_ids = [c["id"] for c in ledger["final_changes"]
                        if c["path"] == event["new"]["path"]]
+            basis = {"old": "FILE_HISTORY" if old_ids else "UNMATCHED",
+                     "new": "FILE_HISTORY" if new_ids else "UNMATCHED"}
         old_ids, new_ids = old_ids[:100], new_ids[:100]
         if not old_ids and not new_ids:
             continue
@@ -197,8 +213,10 @@ def attach_evolution(ledger, events):
         record["id"] = "R-%s-%04d" % (ledger["project"].replace("/", "_"), index)
         record["old_change_ids"] = old_ids
         record["new_change_ids"] = new_ids
+        record["mapping_basis"] = basis
         record["mapping_status"] = (
-            "BOTH_SIDES_MATCHED" if old_ids and new_ids else "PARTIAL_MATCH")
+            "RENAMED_FILE_CANDIDATE" if "RENAMED_FILE" in basis.values()
+            else "BOTH_SIDES_MATCHED" if old_ids and new_ids else "PARTIAL_MATCH")
         relations.append(record)
         for c in ledger["final_changes"]:
             if c["id"] in old_ids or c["id"] in new_ids:

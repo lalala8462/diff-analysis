@@ -58,6 +58,8 @@ class RefactoringTests(unittest.TestCase):
             linked = attach_evolution(ledger, events)
             self.assertEqual(1, len(linked))
             self.assertEqual("BOTH_SIDES_MATCHED", linked[0]["mapping_status"])
+            self.assertEqual({"old": "HUNK_RANGE", "new": "HUNK_RANGE"},
+                             linked[0]["mapping_basis"])
             self.assertEqual("Rename Method", ledger["final_changes"][0]["evolution_types"][0])
 
     def test_move_method_across_classes_maps_both_files(self):
@@ -78,10 +80,57 @@ class RefactoringTests(unittest.TestCase):
                        "source": "CODETRACKER_BRIDGE",
                        "confidence": "EXTERNAL_TRACKED_CANDIDATE",
                        "description": "", "commit_sha": None}]
+            original_changes = [(c["id"], dict(c["old_range"]), dict(c["new_range"]))
+                                for c in ledger["final_changes"]]
             linked = attach_evolution(ledger, events)
             self.assertEqual(1, len(linked))
             self.assertTrue(linked[0]["old_change_ids"])
             self.assertTrue(linked[0]["new_change_ids"])
+            self.assertEqual("RENAMED_FILE_CANDIDATE", linked[0]["mapping_status"])
+            self.assertEqual({"old": "RENAMED_FILE", "new": "RENAMED_FILE"},
+                             linked[0]["mapping_basis"])
+            self.assertEqual(original_changes,
+                             [(c["id"], c["old_range"], c["new_range"])
+                              for c in ledger["final_changes"]])
+
+    def test_pure_rename_attaches_as_file_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = setup(Path(tmp) / "repo")
+            base = commit(repo, "Old.java",
+                          "class Old {\n int calc(){ return 2; }\n}\n", "base")
+            git(repo, "mv", "Old.java", "New.java")
+            git(repo, "commit", "-qm", "PAY-102 rename file")
+            head = git(repo, "rev-parse", "HEAD")
+            ledger = final_diff_ledger(repo, "rhf/pay", base, head)
+            events = [{"kind": "Move Method",
+                       "old": {"path": "Old.java", "start": 2, "end": 2},
+                       "new": {"path": "New.java", "start": 2, "end": 2},
+                       "source": "CODETRACKER_BRIDGE",
+                       "confidence": "EXTERNAL_TRACKED_CANDIDATE"}]
+            linked = attach_evolution(ledger, events)
+            self.assertEqual(1, len(linked))
+            self.assertEqual("RENAMED_FILE_CANDIDATE", linked[0]["mapping_status"])
+            ids = [c["id"] for c in ledger["final_changes"]]
+            self.assertEqual(ids, linked[0]["old_change_ids"])
+            self.assertEqual(ids, linked[0]["new_change_ids"])
+
+    def test_file_fallback_requires_matching_rename_pair(self):
+        event = {"kind": "Move Method",
+                 "old": {"path": "Old.java", "start": 2, "end": 2},
+                 "new": {"path": "New.java", "start": 2, "end": 2},
+                 "confidence": "EXTERNAL_TRACKED_CANDIDATE"}
+        cases = [("R069", "Old.java", "Other.java", 1),
+                 ("R100", "Old.java", "Other.java", 0),
+                 ("M", "Old.java", "New.java", 1)]
+        for status, old_path, path, count in cases:
+            with self.subTest(status=status, path=path):
+                ledger = {"project": "rhf/pay", "final_changes": [{
+                    "id": "D-test", "file_status": status,
+                    "old_path": old_path, "path": path,
+                    "old_range": {"start": 1, "count": count},
+                    "new_range": {"start": 1, "count": count}}]}
+                self.assertEqual([], attach_evolution(ledger, [event]))
+                self.assertNotIn("evolution_ids", ledger["final_changes"][0])
 
     def test_extract_method_creates_evolution_evidence_not_forced_group(self):
         with tempfile.TemporaryDirectory() as tmp:
