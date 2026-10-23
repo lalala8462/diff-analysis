@@ -46,6 +46,9 @@ def review_repo(repo, project, base, head, workdir, cache):
         for target, upstreams in src.items():
             combined[target].update(upstreams)
     impact, limited = callers_of(changed, combined)
+    # Separate version-bound paths for the new release evidence pipeline.
+    old_impact, old_limited = callers_of(changed, old_reverse)
+    new_impact, new_limited = callers_of(changed, new_reverse)
     api_changes = [f for f in changed_files if is_api_path(f['path']) or is_api_path(f['old_path'])]
     api_issues = []
     if api_changes:
@@ -61,12 +64,13 @@ def review_repo(repo, project, base, head, workdir, cache):
     return {'project': project, 'base': base, 'head': head,
             'changed_files': changed_files, 'changed_methods': sorted(changed),
             'methods': new, 'old_methods': old, 'calls': calls,
-            'impact_paths': impact, 'unresolved': new_unresolved,
+            'impact_paths': impact, 'old_impact_paths': old_impact,
+            'new_impact_paths': new_impact, 'unresolved': new_unresolved,
             'old_unresolved_count': len(old_unresolved), 'api_issues': api_issues,
             'warnings': [*('old: ' + s for s in skipped_old), *('new: ' + s for s in skipped_new),
                          *('old parse: ' + x['path'] for x in old_errors),
-                         *('new parse: ' + x['path'] for x in errors)] + (['impact traversal limit reached'] if limited else []),
-            'incomplete': bool(skipped_old or skipped_new or old_errors or errors or limited)}
+                         *('new parse: ' + x['path'] for x in errors)] + (['impact traversal limit reached'] if limited or old_limited or new_limited else []),
+            'incomplete': bool(skipped_old or skipped_new or old_errors or errors or limited or old_limited or new_limited)}
 
 
 def stitch_cross_project(results):

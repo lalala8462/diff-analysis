@@ -1,0 +1,141 @@
+"""Final net diff, history provenance, candidate grouping and separate cross-group checks."""
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from diff_analysis.release_analysis import (
+    collect_commits, final_diff_ledger, candidate_groups, assemble_release)
+from diff_analysis.release_report import write_release_bundle
+
+
+def git(repo, *args):
+    return subprocess.check_output(
+        ["git", "-C", str(repo), *args], stderr=subprocess.STDOUT
+    ).decode("utf-8").strip()
+
+
+def setup(repo):
+    repo.mkdir()
+    git(repo, "init", "-q")
+    git(repo, "config", "user.name", "Test")
+    git(repo, "config", "user.email", "test@example.com")
+    return repo
+
+
+def commit(repo, name, code, message):
+    target = repo / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(code, encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+class ReleaseEvidenceTests(unittest.TestCase):
+    def test_final_net_change_not_sum_of_intermediate_commits(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "Pay.java", "class Pay { int a = 1; }\n", "base")
+            commit(repo, "Pay.java", "class Pay { int a = 2; }\n", "PAY-12 interim")
+            head = commit(repo, "Pay.java", "class Pay { int a = 1; }\n", "PAY-12 rollback")
+            evidence = final_diff_ledger(repo, "rhf/pay", base, head)
+            self.assertEqual([], evidence["final_changes"])
+            self.assertEqual(2, evidence["history"]["total"])
+
+    def test_unique_issue_groups_multiple_commits(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "A.java", "class A {}\n", "base")
+            commit(repo, "A.java", "class A { int a; }\n", "PAY-123 first")
+            commit(repo, "B.java", "class B { int b; }\n", "PAY-123 second")
+            head = commit(repo, "C.java", "class C { int c; }\n", "PAY-124 other")
+            evidence = final_diff_ledger(repo, "rhf/pay", base, head)
+            ids = [c["id"] for c in evidence["final_changes"]]
+            self.assertEqual(len(ids), len(set(ids)))
+            groups, assigned = candidate_groups([evidence])
+            self.assertEqual(3, len(evidence["final_changes"]))
+            self.assertEqual(2, len(groups))
+            self.assertEqual(3, len(assigned))
+            issue_groups = {g["issue_key"]: g for g in groups}
+            self.assertEqual(2, len(issue_groups["PAY-123"]["change_ids"]))
+            self.assertEqual(1, len(issue_groups["PAY-124"]["change_ids"]))
+
+    def test_mixed_issue_commit_not_unconditionally_grouped(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "A.java", "class A {}\n", "base")
+            commit(repo, "A.java", "class A { int a; }\n", "PAY-13 and PAY-14 mixed")
+            head = commit(repo, "B.java", "class B { int b; }\n", "PAY-13 and PAY-14 mixed")
+            evidence = final_diff_ledger(repo, "rhf/pay", base, head)
+            groups, _ = candidate_groups([evidence])
+            self.assertEqual(2, len(groups))
+            self.assertTrue(all(g["group_basis"] == "UNASSIGNED" for g in groups))
+
+    def test_renamed_file_has_file_level_event(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "Old.java", "class T {}\n", "base")
+            git(repo, "mv", "Old.java", "New.java")
+            git(repo, "commit", "-qm", "rename only")
+            head = git(repo, "rev-parse", "HEAD")
+            evidence = final_diff_ledger(repo, "rhf/pay", base, head)
+            self.assertEqual(1, len(evidence["final_changes"]))
+            self.assertTrue(evidence["final_changes"][0]["file_status"].startswith("R"))
+            self.assertEqual("UNSUPPORTED", evidence["final_changes"][0]["status"])
+
+    def test_version_divergence_marks_history_unavailable(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "A.java", "class A {}\n", "base")
+            head = commit(repo, "A.java", "class A { int a; }\n", "PAY-13 first")
+            # reverse direction intentionally makes base not an ancestor
+            timeline = collect_commits(repo, head, base)
+            self.assertEqual("BASE_NOT_ANCESTOR", timeline["status"])
+            evidence = final_diff_ledger(repo, "rhf/pay", head, base)
+            self.assertGreater(len(evidence["final_changes"]), 0)
+
+    def test_single_run_evidence_and_model_inputs_not_executed(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            repo = setup(directory / "repo")
+            base = commit(repo, "A.java", "class A {}\n", "base")
+            head = commit(repo, "A.java", "class A { int a; }\n", "PAY-13 change")
+            specs = [(repo, "rhf/pay", base, head)]
+            out, release = write_release_bundle(
+                specs, [], [], directory / "runs", directory / "analysis.sqlite3")
+            self.assertTrue((out / "report.md").exists())
+            self.assertTrue((out / "analysis.json").exists())
+            self.assertEqual("NOT_INVOKED", release["model_status"])
+            self.assertEqual(1, len(release["groups"]))
+            group_id = release["groups"][0]["id"]
+            payload = json.loads(
+                (out / "model_inputs" / (group_id + ".json")).read_text("utf-8"))
+            self.assertTrue(payload["facts"])
+            self.assertEqual(group_id, payload["group_id"])
+            change_id = release["ledgers"][0]["final_changes"][0]["id"]
+            evidence = (out / "evidence" / (change_id + ".md")).read_text("utf-8")
+            self.assertIn("旧版", evidence)
+            self.assertIn("新版", evidence)
+            self.assertIn(change_id, (out / "report.md").read_text("utf-8"))
+            # Even with exact changes, no business conclusion is asserted.
+            self.assertEqual("STATIC_CANDIDATES_ONLY", release["status"])
+
+    def test_shared_file_creates_cross_group_review_not_forced_merge(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = setup(Path(root) / "repo")
+            base = commit(repo, "A.java",
+                          "class A {\n int a = 1;\n void separator() {}\n int b = 1;\n}\n", "base")
+            mid = commit(repo, "A.java",
+                         "class A {\n int a = 2;\n void separator() {}\n int b = 1;\n}\n", "PAY-111 change")
+            head = commit(repo, "A.java",
+                          "class A {\n int a = 2;\n void separator() {}\n int b = 2;\n}\n", "PAY-222 change")
+            release = assemble_release([(repo, "rhf/pay", base, head)])
+            self.assertGreaterEqual(len(release["groups"]), 2)
+            self.assertTrue(any(x["kind"] == "SHARED_FILE_WEAK"
+                                for x in release["cross_group_checks"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

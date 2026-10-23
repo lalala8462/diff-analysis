@@ -16,6 +16,7 @@ from .gitlab import get_mr, clone_mr
 from .gitops import check_sha, GitError
 from .review import review_repo, stitch_cross_project
 from .report import markdown
+from .release_report import write_release_bundle
 
 
 class WizardCancelled(Exception):
@@ -184,6 +185,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
             root = Path(tmp)
             cache = root / "javac"
             results = []
+            specs = []
             comparisons = []
             meta = {}
             for i, item in enumerate(items):
@@ -221,6 +223,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
                 result = review_repo(repo, project, base, head,
                                      root / ("source-%d" % i), cache)
                 results.append(result)
+                specs.append((repo, project, base, head))
                 comparisons.append({
                     "project": project, "origin": item["kind"],
                     "old_version": item["old_version"],
@@ -251,12 +254,21 @@ def run_wizard(args, input_fn=input, output_fn=print):
             dest.parent.mkdir(parents=True, exist_ok=True)
             output_json.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(report, encoding="utf-8")
+            bundle, _ = write_release_bundle(
+                specs, results, candidates, getattr(args, "run_root", ".diff-analysis/runs"),
+                args.db,
+                model_endpoint=getattr(args, "model_endpoint", None),
+                model_name=getattr(args, "model_name", None),
+                allow_remote_model=getattr(args, "allow_remote_model", False),
+                model_key_env=getattr(args, "model_key_env", "DIFF_ANALYSIS_MODEL_API_KEY"),
+                max_model_groups=getattr(args, "max_model_groups", 20))
             output_json.write_text(json.dumps({
                 "comparisons": comparisons, "catalog_revision": store.revision(),
                 "results": results, "cross_candidates": candidates,
                 "warning": "Static candidate analysis only; version heads are not "
                            "verified merged releases."
             }, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_fn("\n新版候选需求与证据包：" + str(bundle))
     output_fn("\n完成。Markdown 报告：" + str(dest))
     output_fn("JSON 报告：" + str(output_json))
     output_fn("跨项目候选关联：%d 条（不是已证实业务依赖）" % len(candidates))
