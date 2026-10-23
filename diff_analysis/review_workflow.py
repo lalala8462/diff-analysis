@@ -146,6 +146,8 @@ def export_questions(root, release):
     root = Path(root)
     _write_json(root / "questions.json", output)
     _write_json(root / "evidence_manifest.json", output["evidence_manifest"])
+    index = {c["id"]: c for ledger in release["ledgers"]
+             for c in ledger["final_changes"]}
     lines = ["# 问题驱动评审（待人工／工具外 AI 核实）", "",
              "这些问题由静态关联与候选组生成，不是缺陷结论。", ""]
     for q in output["questions"]:
@@ -155,8 +157,20 @@ def export_questions(root, release):
                   "变化：" + (", ".join(q["change_ids"]) or "间接关联／待绑定"),
                   "成立条件：" + q["condition"],
                   "必要证据：" + ", ".join(q["necessary_evidence"]), ""]
-        for cid in q["change_ids"][:10]:
+        for cid in q["change_ids"]:
+            change = index.get(cid)
             lines += ["- 变化证据：" + "evidence/" + cid + ".md"]
+            if not change:
+                continue
+            lines += ["  固定版本：" + change["base_sha"] + " → " +
+                      change["head_sha"], "  文件：" + change["path"]]
+            for side, title in (("before", "旧版"), ("after", "新版")):
+                excerpt = change.get(side, [])
+                lines += ["  " + title + "变化窗口：", "~~~text"]
+                for line in excerpt:
+                    lines.append("%d | %s" % (
+                        line["line"], str(line["text"])[:2000]))
+                lines.append("~~~")
     lines += ["", "## 覆盖限制", "",
               "DIFF 代码窗口不是完整方法；CONSUMER、CONTRACT 与 RELATION "
               "可能只有候选，离线 AI 的实际阅读范围保持 UNKNOWN。", ""]
@@ -169,7 +183,8 @@ def _state(root):
     if not target.is_file():
         return {"schema_version": "review-state-v1",
                 "expected_goals": [], "rule_points": [],
-                "decisions": [], "basis_checks": [], "group_revisions": []}
+                "decisions": [], "basis_checks": [], "group_revisions": [],
+                "goal_revision_events": []}
     data = json.loads(target.read_text(encoding="utf-8"))
     if data.get("schema_version") != "review-state-v1":
         raise ValueError("Unsupported review state")
@@ -190,9 +205,11 @@ def import_review(run_dir, payload):
     ev_ids = valid["DIFF"] | {
         x["id"] for x in _load_supplement_state(root)["evidence"]}
     new_goals = payload.get("expected_goals", [])
-    if not isinstance(new_goals, list) or not isinstance(payload.get("decisions", []), list):
+    new_rules = payload.get("rule_points", [])
+    if (not isinstance(new_goals, list) or not isinstance(new_rules, list) or
+            not isinstance(payload.get("decisions", []), list)):
         raise ValueError("Goals and decisions must be arrays")
-    planned_goals, planned_decisions = [], []
+    planned_goals, planned_decisions, planned_rules, goal_events = [], [], [], []
     goal_ids = {g["id"] for g in state["expected_goals"]}
     for g in new_goals:
         if (not isinstance(g, dict) or
@@ -203,8 +220,29 @@ def import_review(run_dir, payload):
                 g.get("status") != "HUMAN_CONFIRMED" or
                 not isinstance(g.get("author"), str) or not g["author"].strip()):
             raise ValueError("Expected goal requires unique ID, human confirmation and author")
+        parent = g.get("supersedes")
+        if parent is not None:
+            if parent not in {x["id"] for x in state["expected_goals"]}:
+                raise ValueError("Can only revise an existing confirmed goal")
+            goal_events.append({"old_goal_id": parent, "new_goal_id": g["id"],
+                                "created_at_utc": _utc()})
         goal_ids.add(g["id"])
-        planned_goals.append({**g, "created_at_utc": _utc()})
+        planned_goals.append({**g, "revision": 1 if parent is None else 2,
+                              "created_at_utc": _utc()})
+    rule_ids = {r["id"] for r in state["rule_points"]}
+    for item in new_rules:
+        if (not isinstance(item, dict) or
+                not isinstance(item.get("id"), str) or
+                not re.fullmatch(r"RULE-[A-Za-z0-9_-]{1,80}", item["id"]) or
+                item["id"] in rule_ids or
+                item.get("expected_goal_id") not in goal_ids or
+                item.get("status") not in ("CANDIDATE", "HUMAN_CONFIRMED") or
+                not all(isinstance(item.get(k), str) and len(item[k].strip()) >= 5
+                        for k in ("condition", "expected_behavior", "invariant")) or
+                not isinstance(item.get("author"), str) or not item["author"]):
+            raise ValueError("Invalid rule-point goal binding, condition, or status")
+        rule_ids.add(item["id"])
+        planned_rules.append({**item, "created_at_utc": _utc()})
     known_ids = {d["id"] for d in state["decisions"]}
     for item in payload.get("decisions", []):
         obj = item.get("object_type")
@@ -244,9 +282,12 @@ def import_review(run_dir, payload):
             "reading_scope": item.get("reading_scope", "UNKNOWN"),
             "applicability": "CURRENT"})
     state["expected_goals"].extend(planned_goals)
+    state["rule_points"].extend(planned_rules)
+    state.setdefault("goal_revision_events", []).extend(goal_events)
     state["decisions"].extend(planned_decisions)
     _write_json(root / "review_state.json", state)
     return {"goals_added": len(planned_goals),
+            "rules_added": len(planned_rules),
             "decisions_added": len(planned_decisions)}
 
 
