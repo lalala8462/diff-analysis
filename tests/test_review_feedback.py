@@ -60,6 +60,26 @@ class FeedbackTests(unittest.TestCase):
                                 for x in units))
             self.assertTrue(all(x["old_range"] is None for x in units))
 
+    def test_split_group_creates_new_review_group_without_rewriting_ledger(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = release()
+            (root / "analysis.json").write_text(json.dumps(data), encoding="utf-8")
+            export_questions(root, data)
+            result = apply_group_feedback(root, {
+                "schema_version": "group-feedback-v1", "actions": [{
+                    "action": "SPLIT_GROUP", "source_group_id": G1,
+                    "diff_ids": [CID1], "new_group_label": "Separate payment feature",
+                    "actor": "reviewer", "reason": "Evidence supports separate requirement"
+                }]})
+            self.assertEqual(1, len(result["created_groups"]))
+            new_gid = result["created_groups"][0]["id"]
+            self.assertTrue(new_gid.startswith("G-MAN-"))
+            state = json.loads((root / "review_state.json").read_text("utf-8"))
+            self.assertEqual(new_gid, state["group_revisions"][0]["units"][CID1][0]["primary_group"])
+            self.assertEqual(data,
+                             json.loads((root / "analysis.json").read_text("utf-8")))
+
     def test_overlapping_split_is_rejected_without_revision(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
