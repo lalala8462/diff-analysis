@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .release_analysis import assemble_release, final_diff_ledger
+from .review_workflow import export_questions
 
 
 def _code_lines(lines):
@@ -289,6 +290,19 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         (group_dir / (group["id"] + ".md")).write_text(document, encoding="utf-8")
         groups.append((group, document))
 
+    # Independent derived stage: the immutable Git ledger remains usable even
+    # if question/report enrichment fails. Never mislabel missing questions.
+    question_failure = None
+    try:
+        questions = export_questions(root, release)
+        release["question_count"] = len(questions["questions"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        question_failure = {"project": "(batch)", "stage": "REVIEW_QUESTIONS",
+                            "error_type": type(exc).__name__,
+                            "reason": str(exc)[:500]}
+        release.setdefault("stage_failures", []).append(question_failure)
+        if release["status"] != "FAILED_GIT_LEDGER":
+            release["status"] = "PARTIAL_EVIDENCE"
     release["run_id"] = run_id
     release["created_at_utc"] = datetime.now(timezone.utc).isoformat()
     release["report_mode"] = "OFFLINE_AI_INPUT"
@@ -351,6 +365,21 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                        "（待核实，组：" + consumer["group_id"] + "）")
     if not release.get("consumer_candidates"):
         summary.append("暂无候选，不表示没有依赖。")
+    summary += ["", "## 版本调用关系覆盖", ""]
+    for graph in release.get("relations", {}).get("graphs", []):
+        coverage = graph["coverage"]
+        summary.append("- %s %s (%s)：%d 条候选关系边，%d 个未解析调用，图截断=%s" % (
+            graph["project"], graph["side"], graph["snapshot_sha"][:12],
+            coverage["edges"], coverage["unresolved"], coverage["truncated"]))
+    summary += ["", "## 问题驱动评审", ""]
+    if release.get("question_count") is not None:
+        summary += ["生成问题：%s；[问题列表](questions.md)；"
+                    "[结构化问题与建议](questions.json)；"
+                    "[证据覆盖清单](evidence_manifest.json)。" %
+                    release["question_count"],
+                    "这些问题不包含自动 AI 审核结论，METHOD/CONSUMER/CONTRACT 等仍可能缺失。", ""]
+    else:
+        summary += ["评审问题阶段失败，需根据 stage_failures 排查。", ""]
     summary += ["", "## 重构证据覆盖", ""]
     for ledger in release["ledgers"]:
         summary.append("- " + ledger["project"] +
@@ -396,7 +425,10 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     for edge in release["cross_group_checks"]:
         ai_lines.append(edge["id"] + " / " + edge["kind"] + " / " +
                         json.dumps(edge["evidence"], ensure_ascii=False))
-    ai_lines += ["", "## 阅读限制", "",
+    ai_lines += ["", "## 问题式评审入口", "",
+                 "本次审核问题见 questions.md；未完整阅读它或组报告时，"
+                 "不得声称全面评审。", "",
+                 "## 阅读限制", "",
                  "如果 ai_review.md 超出本地模型上下文，"
                  "请分别输入 group_reports/G-*.md 后再合并分析。"
                  "不得因为未输入全部组而声称全面评审。", ""]
@@ -489,7 +521,8 @@ def _register_run(db, run_id, root, release):
                        "group_count": len(release["groups"]),
                        "cross_check_count": len(release["cross_group_checks"]),
                        "consumer_candidate_count": len(release.get("consumer_candidates", [])),
-                       "stage_failure_count": len(release.get("stage_failures", []))}
+                       "stage_failure_count": len(release.get("stage_failures", [])),
+                       "question_count": release.get("question_count", 0)}
             conn.execute("INSERT INTO analysis_run VALUES (?,?,?,?)",
                          (run_id, release["created_at_utc"], str(root),
                           json.dumps(summary, ensure_ascii=False)))
