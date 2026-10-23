@@ -89,3 +89,60 @@
 | [Code Maat](https://github.com/adamtornhill/code-maat) | 历史共同修改的弱关联提示 |
 
 优先验证实际支付/退款相关 MR 的分组质量，再决定是否引入工具。不能将这些工具产生的统计关联直接当作业务逻辑的充分证明。
+
+
+## 6. Java 重构证据与分组准确率（已实现首批）
+
+### RefactoringMiner CLI 可选适配
+
+通过 `--refactoringminer-bin` 显式指定本地 RefactoringMiner 的可执行文件，调用：
+
+~~~text
+RefactoringMiner -bc <repo> <old SHA> <new SHA> -json <temp JSON>
+~~~
+
+使用公开 JSON 的 `commits[].refactorings[].type`、`leftSideLocations` / `rightSideLocations`，支持方法 `Rename`、`Move`、`Move And Rename`、`Extract`、`Extract And Move`、`Inline`、`Pull Up`、`Push Down` 及类移动/重命名。归一化为 `evolution_relations` 并附着到最终差异 ID：
+
+- **直接单提交**：如果结果只有本次目标 SHA，可按旧新文件与变更行匹配；这仍是结构映射候选，不表示业务行为等价。
+- **包含中间提交的多次重构**：提交前后行号**并不是 base/head 行号**；只做文件路径级关联，状态 `HISTORY_CANDIDATE`。不自动串起虚假的跨版本逻辑链。
+- 没有可执行文件时不运行，不要求在使用 Java 8 的业务源码中引入新版本依赖。RefactoringMiner 3.x 本身需要 Java 17 运行。
+- 进程运行异常、JSON 不合法、超时、文件过大、事件超过限制：记录 `enrichment.warnings`，保留净 Diff 与基础分组。
+
+### CodeTracker 桥接导入
+
+CodeTracker 主要提供 Java API，本项目**尚未自动调用其 SDK**。新增 `--codetracker-evidence <json-or-directory>` 支持明确定义的 `codetracker-bridge-v1`；这不是 CodeTracker 原生 JSON，需先通过脚本/Java 桥接转换。
+
+~~~json
+{
+  "schema_version": "codetracker-bridge-v1",
+  "project": "rhf/pay",
+  "base_sha": "<full old SHA>",
+  "head_sha": "<full new SHA>",
+  "mappings": [
+    {
+      "kind": "Extract Method",
+      "old": {"path": "src/A.java", "start": 10, "end": 20},
+      "new": {"path": "src/B.java", "start": 30, "end": 40}
+    }
+  ]
+}
+~~~
+
+路径为项目内的 Git 相对路径，行号为 1 起始的闭区间。导入前校验项目身份、固定 SHA、字段类型和大小上限；未匹配范围仅保留警告与断点。多个项目可传目录，按项目名将 `/` 替换为 `_` 查找 JSON。标准化映射证据标记 `EXTERNAL_TRACKED_CANDIDATE`，不能自动认定重构纯净或无需测试。
+
+### 更严格的需求归属
+
+在 `final_diff_ledger` 对每个有效的新增/修改 Hunk 使用 Git blame 的逐行提交来源（受 120 行预算限制），查询它们是否落在本次旧新版本间，映射 commit message 的唯一任务编号：
+
+1. 新变更行由唯一有任务号提交产生 → `LINE_BLAME_ISSUE_CANDIDATE`，优先用于候选组。
+2. 无法取得变更行提交 → 回退至现有文件级候选任务号（只在唯一任务号时归组）。
+3. 同一片段出现多个任务号/一个提交有多个任务号 → 不强行合组，列 `AMBIGUOUS_OR_UNASSIGNED`。
+4. 仅有方法重命名、移动或提取关系 → 写入演进证据与 `REFACTORING_EVOLUTION_CANDIDATE` **组间检查**；不自动把不同工单的改动合成一个需求。
+
+这种提升主要处理“一个文件中有不同提交/任务的不同 Hunk”。它**不能**解决一个提交同时完成多个需求且没有任务编号的情况，也不能用 blame 证明业务需求语义。
+
+### 回归验收
+
+`tests/test_refactoring_enrichment.py` 包含单次方法重命名、跨类移动、方法提取、跨多提交定位降级、CodeTracker 桥接 SHA 不匹配、安全降级与同一文件不同任务逐行归因。外部 RefactoringMiner 可执行文件不参与基础单测；真实复杂 GitLab 历史仍需本地验收。
+
+已知后续工作：在多提交间构建经过验证的跨重构元素链；为 Extract Method 增加基于 statement mapping 的纯度/行为变化判断；针对 Windows 大仓库建立性能与缓存基准。以上均非当前已完成能力。

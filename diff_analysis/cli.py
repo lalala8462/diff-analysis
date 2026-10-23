@@ -48,12 +48,18 @@ def parser():
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
         child.add_argument('--run-root', default='.diff-analysis/runs', help='Timestamped evidence report directory')
+        child.add_argument('--refactoringminer-bin', default=None,
+                           help='Optional local RefactoringMiner executable (-bc JSON)')
+        child.add_argument('--codetracker-evidence', default=None,
+                           help='Optional normalized CodeTracker bridge-v1 JSON file')
         child.add_argument('--db', default='.diff-analysis/state.sqlite3', help='SQLite run index (separate from baseline facts)')
     interactive = sub.add_parser('wizard', help='Interactive multi-project Git revision comparison (CMD/PowerShell)')
     interactive.add_argument('--db', default='.diff-analysis/state.sqlite3')
     interactive.add_argument('--output', default='report.md')
     interactive.add_argument('--json-output', default='review.json')
     interactive.add_argument('--run-root', default='.diff-analysis/runs')
+    interactive.add_argument('--refactoringminer-bin', default=None)
+    interactive.add_argument('--codetracker-evidence', default=None)
     baseline_cli.configure(sub)
     return p
 
@@ -105,7 +111,9 @@ def run(args):
         print('Review saved:', output)
         print('Repositories:', len(results), '| Modified methods:', sum(len(r['changed_methods']) for r in results), '| Cross-project candidates:', len(candidates))
         bundle, _ = write_release_bundle(
-            specs, results, candidates, args.run_root, args.db)
+            specs, results, candidates, args.run_root, args.db,
+            refactoringminer_bin=args.refactoringminer_bin,
+            codetracker_evidence=args.codetracker_evidence)
         print('Timestamped evidence & candidate groups:', bundle)
         print('Offline AI-ready report:', bundle / 'ai_review.md')
         print('CAUTION: Static analysis is not a proof of compatibility.')

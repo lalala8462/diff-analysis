@@ -2,7 +2,7 @@
 
 **多项目版本变更分析工具**：以最终 Git 差异为底账，利用提交历史解释修改来源，生成需求候选组与组间交叉检查项，输出可以直接交给本地 AI 的离线报告。
 
-> 当前实现：Python CLI + Java AST + SQLite 基线 + 离线 Markdown/JSON 报告。  
+> 当前实现：Python CLI + Java AST + SQLite 基线 + 离线 Markdown/JSON 报告 + 可选重构映射。  
 > **程序不会连接、调用或上传代码到任何 AI 模型。** AI 的使用与推理结果由用户在工具外自行管理。需求候选分组、代码关联和提交归因尚未经过人工确认。
 
 ## 1. Windows 安装
@@ -78,6 +78,46 @@ git pull origin main
     G-xxxxxxxxxxxxxxxx.md    # 单组离线 AI 输入：提交、差异、跨组、代码
 ~~~
 
+### 可选：提高 Java 重命名、移动与提取方法识别准确率
+
+默认运行只使用 Git、Java AST 和基于变更行的 `git blame` 候选归因，不需要额外安装。对于复杂 Java 重构，可指定本机已安装的 RefactoringMiner 可执行文件：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis wizard `
+  --refactoringminer-bin "D:\Tools\RefactoringMiner\bin\RefactoringMiner.bat"
+~~~
+
+RefactoringMiner 3.x 运行需要 Java 17+，与当前 Java 8 项目的编译运行环境可分开配置。程序使用 `-bc <repo> <baseSHA> <headSHA> -json <output>` 获取提交间的重构证据；未安装、超时或执行失败时**保留完整净差异报告**，并标注 `PARTIAL`。重构检测不等于行为等价证明。具体安装请参考 [RefactoringMiner 官方说明](https://github.com/tsantalis/RefactoringMiner/blob/master/documentation/how-to.md)。
+
+CodeTracker 是 Java 代码元素历史追踪库，目前**未直接嵌入其 Java API**。如已使用 CodeTracker 提取了旧新元素对应关系，可转换为项目自定义的 `codetracker-bridge-v1` JSON 再导入：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis wizard `
+  --codetracker-evidence "G:\Code\refactoring-evidence"
+~~~
+
+文件夹中每个项目使用 `local_cps.json`、`local_webapi.json` 等名称（将项目标识中的 `/` 转为 `_`），也可分析单项目时直接传 JSON 文件。必须与项目及固定旧新 SHA 一致；不匹配只记录警告，不污染版本基线。
+
+~~~json
+{
+  "schema_version": "codetracker-bridge-v1",
+  "project": "local/cps",
+  "base_sha": "<完整旧 SHA>",
+  "head_sha": "<完整新 SHA>",
+  "mappings": [
+    {
+      "kind": "Move Method",
+      "old": {"path": "src/main/java/A.java", "start": 12, "end": 22},
+      "new": {"path": "src/main/java/B.java", "start": 35, "end": 46}
+    }
+  ]
+}
+~~~
+
+重构证据写入 `analysis.json` 的 `evolution_relations`，并显示在分组报告里。单次提交中位置与净 Diff 匹配时记录双侧关联；多提交中间重构只视作历史候选，不直接冒充最终旧新元素映射。
+
+**需求分组改进：** 在最终差异 Hunk 的新版本行使用 `git blame` 取得最后修改提交，并关联其任务编号；只有存在唯一任务编号时才允许候选合组。当同文件由多个任务提交修改时，能够区分部分混杂变化。遇到删除行、多任务提交、追踪不明时仍保守处理，不因发现重构而自动合并两个需求。
+
 ### 如何交给本地 AI
 
 首先打开 `report.md` 了解变更范围和候选组数目。然后：
@@ -93,9 +133,9 @@ git pull origin main
 | 处理环节 | 能力与边界 |
 | --- | --- |
 | 最终差异 | 从旧 SHA → 新 SHA 计算 Git 净变化，保存文件/Hunk 记录；不支持的类型保留待核验状态 |
-| Git 演进 | 收集提交拓扑、提交说明和文件级提交候选；不保证精确逐 Hunk 归因 |
-| 分组 | 有唯一明确任务号时尝试合成一个候选需求组；其他变化独立保留 |
-| 交叉检查 | 共享文件/符号、旧或新版静态调用路径以及可能受影响的未修改消费者 |
+| Git 演进 | 收集提交拓扑、文件级候选和变更行 blame 任务号；不能证明业务需求身份 |
+| 分组 | 优先按变更行的唯一任务号，退化到文件历史单一任务号；不能据此自动认定需求 |
+| 交叉检查 | 共享文件/符号、版本内调用、重构演进证据及未修改消费者 |
 | 离线报告 | 汇总和分组 Markdown、旧新代码证据、完整 JSON；**不调用 AI** |
 | 版本基线 | SQLite 保存人工纳管项目清单和固定 SHA 快照；真实 MR 合并晋升仍待开发 |
 
@@ -103,7 +143,7 @@ git pull origin main
 
 ## 5. 后续计划
 
-- 提高混杂提交的 Hunk→提交归因与 Java 重构识别准确度，再评估 CodeTracker/RefactoringMiner 的可选适配。
+- 可选 RefactoringMiner CLI 与 CodeTracker 标准化桥接已支持**重构证据采集**，下一步继续完善多提交跨重构身份链、Hunk 精确归因与纯度判断。
 - 丰富分组依据，在不强制合组的前提下借鉴 SmartCommitCore；后续增加 Code Maat 历史共同修改线索。
 - 提高跨服务资源关系解析，建设 A 主链 / 共享资源 / B 主链的证据展示。
 - 后续根据需要增加 Windows 本地 Web 界面；保持分析与模型推理彻底解耦。

@@ -92,7 +92,10 @@ def _group_report(group, changes, release):
             "符号：" + (", ".join(change["symbols"]) or "尚未解析"),
             "旧版：" + change["base_sha"] + "，行：" + str(change["old_range"]),
             "新版：" + change["head_sha"] + "，行：" + str(change["new_range"]),
-            "来源：" + change["provenance_status"], "",
+            "来源：" + change["provenance_status"],
+            "变更行提交候选：" + (", ".join(change.get("line_commit_candidates", [])) or "无"),
+            "变更行任务号：" + (", ".join(change.get("line_issue_candidates", [])) or "无"),
+            "重构演进关联：" + (", ".join(change.get("evolution_ids", [])) or "无"), "",
             "**旧版代码（变化附近最多前后各 30 行）**", "",
             _code_lines(change["before"]), "",
             "**新版代码（变化附近最多前后各 30 行）**", "",
@@ -100,7 +103,20 @@ def _group_report(group, changes, release):
         ]
         if change.get("limitation"):
             lines += ["解析限制：" + str(change["limitation"]), ""]
-    lines += ["## 组间交叉检查（不等于已确认业务冲突）", ""]
+    lines += ["## 重构与跨版本代码身份线索", ""]
+    change_ids = set(group["change_ids"])
+    refactorings = [ev for ledger in release["ledgers"]
+                    for ev in ledger.get("evolution_relations", [])
+                    if change_ids.intersection(
+                        ev["old_change_ids"] + ev["new_change_ids"])]
+    if not refactorings:
+        lines.append("未检测到或未提供可对应的重构证据；不能证明没有重构。")
+    for ev in refactorings:
+        lines.append("- " + ev["id"] + " · " + ev["kind"] + " · " +
+                     ev["source"] + " · " + ev["confidence"] +
+                     " · " + ev["mapping_status"] + "；旧位置：" +
+                     str(ev["old"]) + "；新位置：" + str(ev["new"]))
+    lines += ["", "## 组间交叉检查（不等于已确认业务冲突）", ""]
     matched = [
         edge for edge in release["cross_group_checks"]
         if group["id"] in (edge.get("from_group"), edge.get("to_group"))
@@ -132,9 +148,13 @@ def _group_report(group, changes, release):
     return "\n".join(lines)
 
 
-def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None):
+def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
+                         refactoringminer_bin=None, codetracker_evidence=None):
     """Generate offline reports; never call or upload source to a model."""
-    release = assemble_release(specs, reviews, cross_candidates)
+    release = assemble_release(
+        specs, reviews, cross_candidates,
+        refactoringminer_bin=refactoringminer_bin,
+        codetracker_evidence=codetracker_evidence)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = stamp + "-" + uuid.uuid4().hex[:8]
     root = Path(run_root).expanduser().resolve() / run_id
@@ -201,6 +221,17 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None):
                        "（待核实，组：" + consumer["group_id"] + "）")
     if not release.get("consumer_candidates"):
         summary.append("暂无候选，不表示没有依赖。")
+    summary += ["", "## 重构证据覆盖", ""]
+    for ledger in release["ledgers"]:
+        summary.append("- " + ledger["project"] +
+                       "：重构关联 " + str(len(ledger.get("evolution_relations", []))) +
+                       " 条；RefactoringMiner：" +
+                       ledger.get("enrichment", {}).get("refactoringminer_status", "未运行") +
+                       "；CodeTracker 桥接：" +
+                       ledger.get("enrichment", {}).get("codetracker_status", "未导入"))
+        for warning in ledger.get("enrichment", {}).get("warnings", []):
+            summary.append("  - " + str(warning.get("type")) +
+                           "（未影响最终 Diff 台账）")
     summary += ["", "## 覆盖与限制", "",
                 "最终差异数：" + str(len(changes)),
                 "未映射 Java 方法数：" +
