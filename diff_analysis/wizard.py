@@ -14,9 +14,10 @@ from .baseline import prepare_baseline, snapshot_summary, target_branch_sha, git
 from .catalog import CatalogStore, BaselineError, validate_project, validate_version
 from .gitlab import get_mr, clone_mr
 from .gitops import check_sha, GitError
+from .scanner import ScannerError
 from .review import review_repo, stitch_cross_project
 from .report import markdown
-from .release_report import write_release_bundle
+from .release_report import write_release_bundle, start_ledger_checkpoint
 
 
 class WizardCancelled(Exception):
@@ -184,53 +185,82 @@ def run_wizard(args, input_fn=input, output_fn=print):
         with tempfile.TemporaryDirectory(prefix="diff-wizard-") as tmp:
             root = Path(tmp)
             cache = root / "javac"
-            results = []
-            specs = []
-            comparisons = []
-            meta = {}
+            results, specs, comparisons, meta, scan_failures = [], [], [], {}, []
+            usable_items = []
+            # Prepare Git project identities independently. No Java scanner runs yet.
             for i, item in enumerate(items):
                 project = item["project"]
+                try:
+                    _register_project(store, item)
+                    if item["kind"] == "local":
+                        repo = item["repo"]
+                        base, head = item["base"], item["head"]
+                    else:
+                        live = get_mr(item["mr_url"], item["host"], token)
+                        if (live["head"] != item["head"] or
+                                live.get("start") != item["base"] or
+                                live.get("state") != "opened"):
+                            raise BaselineError(
+                                "MR_CHANGED: confirmation invalidated by MR update")
+                        if target_branch_sha(live, token) != item["base"].lower():
+                            raise BaselineError("TARGET_MOVED: MR target version changed")
+                        repo = clone_mr(live, root / ("clone-%d" % i), token)
+                        base, head = live["start"], live["head"]
+                        meta[project] = {"url": live["url"], "head": head}
+                    usable_items.append((i, item, repo, base, head))
+                    specs.append((repo, project, base, head))
+                except (BaselineError, GitError, OSError, ValueError) as exc:
+                    scan_failures.append({
+                        "project": project, "base": item["base"],
+                        "head": item["head"], "stage": "PREPARE",
+                        "error_type": type(exc).__name__, "reason": str(exc)[:500]})
+                    output_fn("项目准备失败 %s：%s" % (project, exc))
+            run_root = getattr(args, "run_root", ".diff-analysis/runs")
+            bundle_root, checkpoint = start_ledger_checkpoint(specs, run_root)
+            usable = {(l["project"], l["base"], l["head"])
+                      for l in checkpoint["ledgers"]}
+            for i, item, repo, base, head in usable_items:
+                project = item["project"]
+                if (project, base, head) not in usable:
+                    continue
                 output_fn("[%d/%d] 分析 %s ..." % (i + 1, len(items), project))
-                _register_project(store, item)
-                if item["kind"] == "local":
-                    repo = item["repo"]
-                    base, head = item["base"], item["head"]
-                else:
-                    live = get_mr(item["mr_url"], item["host"], token)
-                    if (live["head"] != item["head"] or
-                            live.get("start") != item["base"] or
-                            live.get("state") != "opened"):
-                        raise BaselineError(
-                            "MR_CHANGED: 输入确认后 MR 已更新，未执行本次比较")
-                    if target_branch_sha(live, token) != item["base"].lower():
-                        raise BaselineError("TARGET_MOVED: MR 的目标版本已发生变化")
-                    repo = clone_mr(live, root / ("clone-%d" % i), token)
-                    base, head = live["start"], live["head"]
-                    meta[project] = {"url": live["url"], "head": head}
-
-                snapshot, created = prepare_baseline(
-                    store, project, item["old_version"], repo, base)
-                if item["kind"] == "mr":
-                    store.save_candidate({
-                        "project_path": project, "mr_url": item["mr_url"],
-                        "old_version": item["old_version"],
-                        "new_version": item["new_version"],
-                        "target_sha": base, "diff_base_sha": live["base"],
-                        "source_head_sha": head,
-                        "source_tree_sha": git_tree(repo, head),
-                        "state": "SOURCE_HEAD_ONLY"
-                    })
-                result = review_repo(repo, project, base, head,
-                                     root / ("source-%d" % i), cache)
-                results.append(result)
-                specs.append((repo, project, base, head))
+                created, snapshot = False, None
+                try:
+                    snapshot, created = prepare_baseline(
+                        store, project, item["old_version"], repo, base)
+                    if item["kind"] == "mr":
+                        store.save_candidate({
+                            "project_path": project, "mr_url": item["mr_url"],
+                            "old_version": item["old_version"],
+                            "new_version": item["new_version"],
+                            "target_sha": base, "diff_base_sha": live["base"]
+                                if i == len(items) - 1 else base,
+                            "source_head_sha": head,
+                            "source_tree_sha": git_tree(repo, head),
+                            "state": "SOURCE_HEAD_ONLY"
+                        })
+                except (BaselineError, GitError, ScannerError, OSError, ValueError) as exc:
+                    scan_failures.append({
+                        "project": project, "base": base, "head": head,
+                        "stage": "BASELINE", "error_type": type(exc).__name__,
+                        "reason": str(exc)[:500]})
+                try:
+                    result = review_repo(repo, project, base, head,
+                                         root / ("source-%d" % i), cache)
+                    results.append(result)
+                except (ScannerError, GitError, OSError, ValueError) as exc:
+                    scan_failures.append({
+                        "project": project, "base": base, "head": head,
+                        "stage": "STATIC_SCAN", "error_type": type(exc).__name__,
+                        "reason": str(exc)[:500]})
+                    output_fn("静态扫描失败 %s：Git 底账仍保留" % project)
                 comparisons.append({
                     "project": project, "origin": item["kind"],
                     "old_version": item["old_version"],
                     "new_version": item["new_version"],
                     "base_sha": base, "head_sha": head,
                     "baseline_created": created,
-                    "baseline_status": snapshot["status"],
+                    "baseline_status": snapshot["status"] if snapshot else "FAILED",
                     "candidate_status": "SOURCE_HEAD_ONLY" if item["kind"] == "mr"
                                         else "LOCAL_COMMIT_COMPARE_NOT_PROMOTED"
                 })
@@ -249,22 +279,26 @@ def run_wizard(args, input_fn=input, output_fn=print):
             report = report.replace(
                 "## 一、项目与版本",
                 "\n".join(version_lines) + "\n\n## 一、项目与版本", 1)
+            if scan_failures or checkpoint["failures"]:
+                report += "\n\n## 阶段失败\n\n部分项目未完成扫描，详见独立运行目录。\n"
             dest = Path(args.output).expanduser().resolve()
             output_json = Path(args.json_output).expanduser().resolve()
             dest.parent.mkdir(parents=True, exist_ok=True)
             output_json.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(report, encoding="utf-8")
             bundle, _ = write_release_bundle(
-                specs, results, candidates, getattr(args, "run_root", ".diff-analysis/runs"),
-                args.db,
+                specs, results, candidates, run_root, args.db,
                 refactoringminer_bin=getattr(args, "refactoringminer_bin", None),
                 codetracker_evidence=getattr(args, "codetracker_evidence", None),
-                attribution_rules=getattr(args, "attribution_rules", None))
+                attribution_rules=getattr(args, "attribution_rules", None),
+                checkpoint={"root": bundle_root, "manifest": checkpoint},
+                scan_failures=scan_failures)
+            # Legacy outputs are downstream of durable evidence.
+            dest.write_text(report, encoding="utf-8")
             output_json.write_text(json.dumps({
                 "comparisons": comparisons, "catalog_revision": store.revision(),
                 "results": results, "cross_candidates": candidates,
-                "warning": "Static candidate analysis only; version heads are not "
-                           "verified merged releases."
+                "stage_failures": checkpoint["failures"] + scan_failures,
+                "warning": "Static candidates only; release versions not promoted."
             }, ensure_ascii=False, indent=2), encoding="utf-8")
     output_fn("\n新版候选需求与证据包：" + str(bundle))
     output_fn("可交给本地 AI 的完整报告：" + str(bundle / "ai_review.md"))
