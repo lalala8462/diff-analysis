@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .release_analysis import assemble_release
+from .release_analysis import assemble_release, final_diff_ledger
 
 
 def _code_lines(lines):
@@ -183,18 +183,91 @@ def _group_report(group, changes, release):
     return "\n".join(lines)
 
 
+def start_ledger_checkpoint(specs, run_root):
+    """Durably save pinned Git net changes before any Java scanner is called.
+
+    A broken Git repository is recorded separately; other projects still retain
+    their raw evidence. This checkpoint never contains inferred AI conclusions.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    run_id = stamp + "-" + uuid.uuid4().hex[:8]
+    root = Path(run_root).expanduser().resolve() / run_id
+    root.mkdir(parents=True, exist_ok=False)
+    manifest = {"schema_version": "git-ledger-checkpoint-v1",
+                "run_id": run_id, "state": "COLLECTING",
+                "projects": [], "ledgers": [], "failures": []}
+
+    def persist():
+        # Atomic replacement: a crash does not leave a half-written JSON.
+        temp = root / "ledger_checkpoint.tmp"
+        temp.write_text(json.dumps(manifest, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        temp.replace(root / "ledger_checkpoint.json")
+
+    persist()
+    for repo, project, base, head in specs:
+        try:
+            ledger = final_diff_ledger(repo, project, base, head)
+        except (OSError, RuntimeError, ValueError) as exc:
+            failure = {"project": project, "base": base, "head": head,
+                       "stage": "GIT_LEDGER", "error_type": type(exc).__name__,
+                       "reason": str(exc)[:500]}
+            manifest["failures"].append(failure)
+            manifest["projects"].append({"project": project, "base": base,
+                                         "head": head, "git_ledger": "FAILED"})
+        else:
+            manifest["ledgers"].append(ledger)
+            manifest["projects"].append({"project": project, "base": base,
+                                         "head": head, "git_ledger": "SAVED"})
+        persist()
+    manifest["state"] = ("PARTIAL" if manifest["failures"] else "SAVED")
+    persist()
+    return root, manifest
+
+
 def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                          refactoringminer_bin=None, codetracker_evidence=None,
-                         attribution_rules=None):
-    """Generate offline reports; never call or upload source to a model."""
+                         attribution_rules=None, checkpoint=None,
+                         scan_failures=None):
+    """Generate offline reports; a pre-saved checkpoint survives scan failures."""
+    root = (Path(checkpoint["root"]) if checkpoint is not None else None)
+    manifest = checkpoint["manifest"] if checkpoint is not None else None
+    if manifest is not None:
+        saved = {(l["project"], l["base"], l["head"])
+                 for l in manifest["ledgers"]}
+        specs = [x for x in specs if (x[1], x[2], x[3]) in saved]
     release = assemble_release(
         specs, reviews, cross_candidates,
         refactoringminer_bin=refactoringminer_bin,
         codetracker_evidence=codetracker_evidence,
-        attribution_rules=attribution_rules)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    run_id = stamp + "-" + uuid.uuid4().hex[:8]
-    root = Path(run_root).expanduser().resolve() / run_id
+        attribution_rules=attribution_rules,
+        precomputed_ledgers=manifest["ledgers"] if manifest is not None else None)
+    scan_failures = list(scan_failures or [])
+    if manifest is not None:
+        keys = {(r["project"], r["base"], r["head"]): r for r in reviews}
+        failures = {(r["project"], r["base"], r["head"]): r
+                    for r in scan_failures}
+        release["project_phase_status"] = []
+        for row in manifest["projects"]:
+            key = (row["project"], row["base"], row["head"])
+            review = keys.get(key)
+            release["project_phase_status"].append({
+                **row, "static_scan": ("NOT_RUN" if row["git_ledger"] == "FAILED"
+                    else "FAILED" if key in failures
+                    else "PARTIAL" if review and review.get("incomplete")
+                    else "COMPLETED" if review else "NOT_RUN")})
+        release["stage_failures"] = manifest["failures"] + scan_failures
+        if release["stage_failures"]:
+            release["status"] = "PARTIAL_EVIDENCE"
+        release["warnings"].extend(
+            ["One or more phases failed; missing static evidence is not a safe result"]
+            if release["stage_failures"] else [])
+    if root is None:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        run_id = stamp + "-" + uuid.uuid4().hex[:8]
+        root = Path(run_root).expanduser().resolve() / run_id
+    else:
+        run_id = manifest["run_id"]
     evidence = root / "evidence"
     group_dir = root / "group_reports"
     evidence.mkdir(parents=True, exist_ok=False)
@@ -227,6 +300,19 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         summary.append("| %s | %s | %s | %d | %s |" %
                        (led["project"], led["base"][:12], led["head"][:12],
                         len(led["final_changes"]), led["history"]["status"]))
+    if manifest is not None:
+        summary += ["", "## 项目阶段覆盖（失败不代表无影响）", "",
+                    "| 项目 | Git 净差异底账 | Java 静态扫描 |",
+                    "| --- | --- | --- |"]
+        for phase in release["project_phase_status"]:
+            summary.append("| %s | %s | %s |" % (
+                phase["project"], phase["git_ledger"], phase["static_scan"]))
+        for failure in release["stage_failures"]:
+            summary.append("- %s / %s 失败：%s（%s）" % (
+                failure["project"], failure["stage"], failure["error_type"],
+                failure["reason"].replace("\n", " ")[:300]))
+        summary += ["", "原始 Git 底账：[ledger_checkpoint.json](ledger_checkpoint.json)。",
+                    "扫描失败时可据此恢复原始差异；当前版本尚无自动重建命令。", ""]
     summary += ["", "## 需求候选组", ""]
     change_index = {c["id"]: c for c in changes}
     for group, _ in groups:
@@ -293,6 +379,10 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         ai_lines.append("- " + led["project"] + ": " + led["base"] +
                         " → " + led["head"] + "；历史：" +
                         led["history"]["status"])
+    for failure in release.get("stage_failures", []):
+        ai_lines.append("- 缺口：" + failure["project"] + " / " +
+                        failure["stage"] + " / " + failure["error_type"] +
+                        "；此阶段未成功，不能推定无影响。")
     for group, doc in groups:
         ai_lines += ["", "---", "", doc]
     ai_lines += ["", "## 全局组间关联", ""]
@@ -328,7 +418,8 @@ def _register_run(db, run_id, root, release):
                        "project_scope": release["project_scope"],
                        "group_count": len(release["groups"]),
                        "cross_check_count": len(release["cross_group_checks"]),
-                       "consumer_candidate_count": len(release.get("consumer_candidates", []))}
+                       "consumer_candidate_count": len(release.get("consumer_candidates", [])),
+                       "stage_failure_count": len(release.get("stage_failures", []))}
             conn.execute("INSERT INTO analysis_run VALUES (?,?,?,?)",
                          (run_id, release["created_at_utc"], str(root),
                           json.dumps(summary, ensure_ascii=False)))
