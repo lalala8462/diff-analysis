@@ -241,15 +241,20 @@ def _register_run(db, run_id, root, release):
     import sqlite3
     target = Path(db).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(target)) as conn:
-        conn.execute("""CREATE TABLE IF NOT EXISTS analysis_run(
-            run_id TEXT PRIMARY KEY, created_at_utc TEXT NOT NULL,
-            report_path TEXT NOT NULL, summary_json TEXT NOT NULL)""")
-        summary = {"status": release["status"], "model_status": release["model_status"],
-                   "project_scope": release["project_scope"],
-                   "group_count": len(release["groups"]),
-                   "cross_check_count": len(release["cross_group_checks"]),
-                   "consumer_candidate_count": len(release.get("consumer_candidates", []))}
-        conn.execute("INSERT INTO analysis_run VALUES (?,?,?,?)",
-                     (run_id, release["created_at_utc"], str(root),
-                      json.dumps(summary, ensure_ascii=False)))
+    # sqlite3.Connection.__exit__ commits/rolls back but does NOT close the
+    # connection. On Windows an open handle prevents TemporaryDirectory cleanup.
+    # closing() releases the file handle even when insertion fails.
+    from contextlib import closing
+    with closing(sqlite3.connect(str(target))) as conn:
+        with conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS analysis_run(
+                run_id TEXT PRIMARY KEY, created_at_utc TEXT NOT NULL,
+                report_path TEXT NOT NULL, summary_json TEXT NOT NULL)""")
+            summary = {"status": release["status"], "model_status": release["model_status"],
+                       "project_scope": release["project_scope"],
+                       "group_count": len(release["groups"]),
+                       "cross_check_count": len(release["cross_group_checks"]),
+                       "consumer_candidate_count": len(release.get("consumer_candidates", []))}
+            conn.execute("INSERT INTO analysis_run VALUES (?,?,?,?)",
+                         (run_id, release["created_at_utc"], str(root),
+                          json.dumps(summary, ensure_ascii=False)))
