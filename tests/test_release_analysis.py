@@ -1,14 +1,16 @@
 """Final net diff, history provenance, candidate grouping and separate cross-group checks."""
 import json
+import sqlite3
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from diff_analysis.release_analysis import (
     collect_commits, final_diff_ledger, candidate_groups, assemble_release,
     consumer_candidates)
-from diff_analysis.release_report import write_release_bundle
+from diff_analysis.release_report import write_release_bundle, _register_run
 
 
 def git(repo, *args):
@@ -151,6 +153,51 @@ class ReleaseEvidenceTests(unittest.TestCase):
         self.assertEqual("G-pay", checks[0]["group_id"])
         self.assertEqual("rhf/reconciliation", checks[0]["consumer_project"])
         self.assertEqual("CANDIDATE", checks[0]["status"])
+
+
+    def test_analysis_run_sqlite_connection_closed_on_success_and_failure(self):
+        """Windows must be able to remove the SQLite file without gc.collect()."""
+        connections = []
+        original_connect = sqlite3.connect
+
+        class TrackedConnection(sqlite3.Connection):
+            explicitly_closed = False
+
+            def close(self):
+                self.explicitly_closed = True
+                return super().close()
+
+        def connect_tracked(*args, **kwargs):
+            kwargs["factory"] = TrackedConnection
+            conn = original_connect(*args, **kwargs)
+            connections.append(conn)
+            return conn
+
+        with tempfile.TemporaryDirectory() as root:
+            db = Path(root) / "analysis.sqlite3"
+            release = {
+                "status": "STATIC_CANDIDATES_ONLY",
+                "model_status": "NOT_INVOKED",
+                "project_scope": ["rhf/pay"],
+                "groups": [],
+                "cross_group_checks": [],
+                "consumer_candidates": [],
+                "created_at_utc": "2026-10-23T00:00:00Z",
+            }
+            with patch("sqlite3.connect", side_effect=connect_tracked):
+                _register_run(db, "run-1", root, release)
+                self.assertEqual(1, len(connections))
+                self.assertTrue(connections[0].explicitly_closed)
+
+                # A duplicate run ID must roll back and still close the handle.
+                with self.assertRaises(sqlite3.IntegrityError):
+                    _register_run(db, "run-1", root, release)
+                self.assertEqual(2, len(connections))
+                self.assertTrue(connections[1].explicitly_closed)
+
+            # On Windows this would raise WinError 32 if any connection remained open.
+            db.unlink()
+            self.assertFalse(db.exists())
 
 
 if __name__ == "__main__":
