@@ -41,6 +41,8 @@ def apply_group_feedback(run_dir, payload):
     # Deep copy: a failed validation cannot modify the previously stored revision.
     by_diff = json.loads(json.dumps(by_diff))
     known_groups = {g["id"] for g in release["groups"]}
+    created_groups = list(latest.get("created_groups", [])) if latest else []
+    known_groups.update(g["id"] for g in created_groups)
     known_groups.update(u["primary_group"] for units in by_diff.values()
                         for u in units if u["primary_group"])
     changes = {c["id"]: c for l in release["ledgers"]
@@ -49,7 +51,7 @@ def apply_group_feedback(run_dir, payload):
     actions = []
     for item in payload["actions"]:
         if not isinstance(item, dict) or item.get("action") not in (
-                "SPLIT_HUNK", "MOVE_UNIT", "MERGE_GROUPS"):
+                "SPLIT_HUNK", "MOVE_UNIT", "MERGE_GROUPS", "SPLIT_GROUP"):
             raise ValueError("Unsupported group-feedback action")
         if (not isinstance(item.get("reason"), str) or
                 len(item["reason"].strip()) < 5 or
@@ -105,6 +107,33 @@ def apply_group_feedback(run_dir, payload):
                 result.append(_segment(did, cursor, end - cursor + 1, None, True))
             by_diff[did] = result
             touched_diff.add(did)
+        elif action == "SPLIT_GROUP":
+            source = item.get("source_group_id")
+            selected = item.get("diff_ids")
+            label = item.get("new_group_label")
+            if (source not in known_groups or
+                    not isinstance(label, str) or len(label.strip()) < 3 or
+                    not isinstance(selected, list) or not selected or
+                    len(set(selected)) != len(selected) or
+                    not all(did in by_diff for did in selected)):
+                raise ValueError("SPLIT_GROUP needs existing source, change IDs and label")
+            if not all(any(u["primary_group"] == source for u in by_diff[did])
+                       for did in selected):
+                raise ValueError("SPLIT_GROUP must move units owned by source group")
+            gid = "G-MAN-" + _hash([source, sorted(selected), label.strip()])[:12]
+            if gid in known_groups:
+                raise ValueError("Duplicate manual group")
+            known_groups.add(gid)
+            created_groups.append({"id": gid, "label": label.strip(),
+                                   "source_group": source,
+                                   "created_at_utc": _utc()})
+            for did in selected:
+                for unit in by_diff[did]:
+                    if unit["primary_group"] == source:
+                        unit["primary_group"] = gid
+                        unit["revision"] += 1
+                        touched_diff.add(did)
+            touched_groups.update([source, gid])
         elif action == "MOVE_UNIT":
             uid, gid = item.get("unit_id"), item.get("target_group_id")
             if gid not in known_groups:
@@ -151,6 +180,7 @@ def apply_group_feedback(run_dir, payload):
         "id": "GRV-" + _hash([revision, actions, _utc()])[:16],
         "revision": revision, "created_at_utc": _utc(),
         "actions": actions, "units": by_diff,
+        "created_groups": created_groups,
         "affected_change_ids": sorted(touched_diff),
         "affected_group_ids": sorted(x for x in touched_groups if x),
         "affected_question_ids": affected_qids,
@@ -164,6 +194,7 @@ def apply_group_feedback(run_dir, payload):
     _write_json(destination / ("groups-%03d.json" % revision), rev)
     _write_json(root / "review_state.json", state)
     return {"revision": revision, "units": sum(len(x) for x in by_diff.values()),
+            "created_groups": created_groups,
             "affected_questions": affected_qids,
             "decisions_needing_review": invalidated}
 
