@@ -64,6 +64,9 @@ class LedgerCheckpointTests(unittest.TestCase):
             self.assertEqual("FAILED", release["project_phase_status"][0]["static_scan"])
             self.assertEqual("STATIC_SCAN", release["stage_failures"][0]["stage"])
             self.assertTrue((bundle / "evidence" / (change_id + ".md")).exists())
+            stages = json.loads((bundle / "stage_manifest.json").read_text("utf-8"))
+            self.assertEqual("PARTIAL", stages["state"])
+            self.assertEqual("COMPLETE", stages["report_stage"]["status"])
             self.assertIn("FAILED", (bundle / "report.md").read_text("utf-8"))
             self.assertIn("部分扫描失败", Path(args.output).read_text("utf-8"))
 
