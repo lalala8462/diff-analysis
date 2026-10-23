@@ -305,6 +305,21 @@ def group_intersections(ledgers, groups, by_change, reviews=None, cross_candidat
                                 [touched[ga]["id"], touched[gb]["id"]],
                              "version": version,
                              "note": "Static resolved calls; business impact unverified"})
+    # P0 cross-project method-name matches are weak candidates, never confirmed RPCs.
+    for candidate in (cross_candidates or []):
+        left = by_symbol.get((candidate.get("callee_project"),
+                              candidate.get("callee")), [])
+        right = by_symbol.get((candidate.get("caller_project"),
+                               candidate.get("caller")), [])
+        for ga, ca in left[:20]:
+            for gb, cb in right[:20]:
+                add(ga, gb, "CROSS_PROJECT_CALL_CANDIDATE",
+                    {"callee": candidate.get("callee"),
+                     "caller": candidate.get("caller"),
+                     "callee_project": candidate.get("callee_project"),
+                     "caller_project": candidate.get("caller_project"),
+                     "change_ids": [ca["id"], cb["id"]],
+                     "note": "P0 name/arity match; not confirmed cross-service call"})
     for warning in truncations:
         key = ("TRUNCATED", str(warning))
         edges[key] = {"id": "X-" + identifier(key), "from_group": "",
@@ -314,6 +329,35 @@ def group_intersections(ledgers, groups, by_change, reviews=None, cross_candidat
     return sorted(edges.values(), key=lambda x: x["id"])
 
 
+
+def consumer_candidates(ledgers, by_change, cross_candidates):
+    """Retain potentially affected unchanged consumers not represented by another group."""
+    by_symbol = defaultdict(list)
+    for l in ledgers:
+        for c in l["final_changes"]:
+            for symbol in c["symbols"]:
+                by_symbol[(c["project"], symbol)].append(c)
+    findings = []
+    seen = set()
+    for candidate in (cross_candidates or []):
+        matching = by_symbol.get((candidate.get("callee_project"),
+                                  candidate.get("callee")), [])
+        for c in matching:
+            key = (c["id"], candidate.get("caller_project"), candidate.get("caller"))
+            if key in seen:
+                continue
+            seen.add(key)
+            findings.append({
+                "group_id": by_change[c["id"]],
+                "change_id": c["id"],
+                "consumer_project": candidate.get("caller_project"),
+                "consumer_symbol": candidate.get("caller"),
+                "status": "CANDIDATE",
+                "source": "P0_NAME_ARITY_MATCH",
+                "evidence": {"path": candidate.get("path"), "line": candidate.get("line")},
+                "limitation": "Unmodified consumer or no group mapping; confirm actual type/RPC"})
+    return findings
+
 def assemble_release(specs, reviews=None, cross_candidates=None):
     """specs: [(git_repo_path, project, old_commit, new_commit)]."""
     ledgers = [final_diff_ledger(repo, project, base, head,
@@ -322,6 +366,7 @@ def assemble_release(specs, reviews=None, cross_candidates=None):
                for repo, project, base, head in specs]
     groups, by_change = candidate_groups(ledgers)
     intersections = group_intersections(ledgers, groups, by_change, reviews, cross_candidates)
+    consumers = consumer_candidates(ledgers, by_change, cross_candidates)
     names = [l["project"] for l in ledgers]
     duplicate_warnings = (
         ["Same project appears in several comparisons: analyses are independent; "
@@ -333,6 +378,7 @@ def assemble_release(specs, reviews=None, cross_candidates=None):
         "project_scope": names,
         "ledgers": ledgers, "groups": groups,
         "cross_group_checks": intersections,
+        "consumer_candidates": consumers,
         "model_status": "NOT_INVOKED",
         "warnings": duplicate_warnings + [
             "File-level commit attribution is only a candidate",

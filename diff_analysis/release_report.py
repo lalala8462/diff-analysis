@@ -51,7 +51,7 @@ def _write_evidence(root, change):
     return path
 
 
-def _model_input(group, changes, intersections, ledgers):
+def _model_input(group, changes, intersections, ledgers, consumers=None):
     citations = {c["id"]: c for c in changes}
     history = {(l["project"], l["head"]): l["history"] for l in ledgers}
     compact = []
@@ -88,6 +88,8 @@ def _model_input(group, changes, intersections, ledgers):
         "group_status": "CANDIDATE", "source": "STATIC_ANALYSIS",
         "facts": compact, "commit_messages": commit_info[:80],
         "related_group_checks": related[:30],
+        "possible_unchanged_consumers": [c for c in (consumers or [])
+                                         if c["group_id"] == group["id"]][:30],
         "unprovided_change_ids": dropped,
         "budget": {"max_chars": MODEL_BUDGET_CHARS, "truncated": bool(dropped)},
         "task": ("以中文提出可能的需求目标、V1/V2 变化、业务影响及人工核实问题；"
@@ -124,7 +126,7 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     model_results = {}
     for index, group in enumerate(release["groups"]):
         payload = _model_input(group, changes, release["cross_group_checks"],
-                               release["ledgers"])
+                               release["ledgers"], release.get("consumer_candidates", []))
         (model_dir / (group["id"] + ".json")).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         if model_endpoint and index < max_model_groups:
@@ -203,6 +205,14 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         report.append("- %s ↔ %s：%s（%s，非缺陷认定）" %
                       (edge["from_group"], edge["to_group"],
                        edge["kind"], edge["status"]))
+    report += ["", "## 已登记但未必有提交 MR 的关联消费者（候选）", ""]
+    consumers = release.get("consumer_candidates", [])
+    if not consumers:
+        report.append("当前静态规则没有发现可归组的外部消费者；不能据此证明不存在。")
+    for consumer in consumers:
+        report.append("- %s：%s · %s（来源：%s；需要核对真实调用类型/部署关系）" %
+                      (consumer["group_id"], consumer["consumer_project"],
+                       consumer["consumer_symbol"], consumer["source"]))
     report += ["", "## 证据不足与覆盖边界", ""]
     total = len(changes)
     mapped = sum(c["status"] == "SEMANTIC_MAPPED" for c in changes)
@@ -238,7 +248,8 @@ def _register_run(db, run_id, root, release):
         summary = {"status": release["status"], "model_status": release["model_status"],
                    "project_scope": release["project_scope"],
                    "group_count": len(release["groups"]),
-                   "cross_check_count": len(release["cross_group_checks"])}
+                   "cross_check_count": len(release["cross_group_checks"]),
+                   "consumer_candidate_count": len(release.get("consumer_candidates", []))}
         conn.execute("INSERT INTO analysis_run VALUES (?,?,?,?)",
                      (run_id, release["created_at_utc"], str(root),
                       json.dumps(summary, ensure_ascii=False)))

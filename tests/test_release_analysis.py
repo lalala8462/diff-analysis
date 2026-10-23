@@ -6,7 +6,8 @@ import unittest
 from pathlib import Path
 
 from diff_analysis.release_analysis import (
-    collect_commits, final_diff_ledger, candidate_groups, assemble_release)
+    collect_commits, final_diff_ledger, candidate_groups, assemble_release,
+    consumer_candidates)
 from diff_analysis.release_report import write_release_bundle
 
 
@@ -135,6 +136,21 @@ class ReleaseEvidenceTests(unittest.TestCase):
             self.assertGreaterEqual(len(release["groups"]), 2)
             self.assertTrue(any(x["kind"] == "SHARED_FILE_WEAK"
                                 for x in release["cross_group_checks"]))
+
+
+    def test_unmodified_consumer_kept_as_candidate(self):
+        ledger = {"final_changes": [{
+            "id": "D-test", "project": "rhf/pay",
+            "symbols": ["x.Payment#pay()"]}]}
+        P0 = [{
+            "callee_project": "rhf/pay", "callee": "x.Payment#pay()",
+            "caller_project": "rhf/reconciliation", "caller": "y.Job#run()",
+            "path": "src/Job.java", "line": 12}]
+        checks = consumer_candidates([ledger], {"D-test": "G-pay"}, P0)
+        self.assertEqual(1, len(checks))
+        self.assertEqual("G-pay", checks[0]["group_id"])
+        self.assertEqual("rhf/reconciliation", checks[0]["consumer_project"])
+        self.assertEqual("CANDIDATE", checks[0]["status"])
 
 
 if __name__ == "__main__":

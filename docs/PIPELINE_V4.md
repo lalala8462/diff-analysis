@@ -90,6 +90,8 @@
 
 当前首批实现：
 - `SHARED_FILE_WEAK`：两个不同候选组修改同一个文件；只提示检查，不自动合组。
+- `CROSS_PROJECT_CALL_CANDIDATE`：P0 的调用名称/参数数量候选若在两个变化组都有映射，形成跨项目组间检查（并非确认的 Dubbo 调用）。
+- `consumer_candidates`：如果 B 没有改变也没形成分组，但当前 P0 检测到 B 调用 A 的候选，仍把 B 作为**未变更消费程序**单独列在报告中，等待人工核实。
 - `SHARED_SYMBOL_CANDIDATE`：两个组修改同一 AST 方法符号；仍须审查变化是否独立。
 - `CALL_PATH_BASE_CANDIDATE` / `CALL_PATH_HEAD_CANDIDATE`：沿**分别属于旧版/新版**的静态调用图，发现两个组共同涉及的路径。
 - 预算触顶时 `ANALYSIS_TRUNCATED`，不能将遗漏的组对视为没有关系。
