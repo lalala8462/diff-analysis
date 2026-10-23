@@ -1,6 +1,7 @@
 """Produce offline human and local-AI-ready reports from verified Git evidence."""
 import json
 import uuid
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -196,6 +197,7 @@ def start_ledger_checkpoint(specs, run_root, roles=None):
     root.mkdir(parents=True, exist_ok=False)
     manifest = {"schema_version": "git-ledger-checkpoint-v1",
                 "run_id": run_id, "state": "COLLECTING",
+                "created_at_utc": datetime.now(timezone.utc).isoformat(),
                 "projects": [], "ledgers": [], "failures": []}
 
     def persist():
@@ -224,6 +226,15 @@ def start_ledger_checkpoint(specs, run_root, roles=None):
             manifest["projects"].append({"project": project, "base": base,
                                          "head": head, "git_ledger": "SAVED",
                                          "role": ledger["role"]})
+        manifest["projects"][-1]["git_stage"] = {
+            "status": ("FAILED" if manifest["projects"][-1]["git_ledger"] == "FAILED"
+                       else "COMPLETE"),
+            "input_fingerprint": hashlib.sha256(json.dumps(
+                [project, base, head], separators=(",", ":")
+            ).encode("utf-8")).hexdigest(),
+            "finished_at_utc": datetime.now(timezone.utc).isoformat(),
+            "output_ref": "ledger_checkpoint.json"
+        }
         persist()
     manifest["state"] = ("FAILED" if not manifest["ledgers"] else
                          "PARTIAL" if manifest["failures"] else "SAVED")
@@ -263,6 +274,7 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
             release["project_phase_status"].append({
                 **row, "baseline": "FAILED" if baseline_fail else "UNKNOWN",
                 "static_scan": ("NOT_RUN" if row["git_ledger"] == "FAILED"
+                    else "SKIPPED" if failures.get(key, {}).get("error_type") == "NOT_RERUN"
                     else "FAILED" if key in failures
                     else "PARTIAL" if review and review.get("incomplete")
                     else "COMPLETED" if review else "NOT_RUN")})
@@ -310,6 +322,24 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     release["run_id"] = run_id
     release["created_at_utc"] = datetime.now(timezone.utc).isoformat()
     release["report_mode"] = "OFFLINE_AI_INPUT"
+    if manifest is not None:
+        stage_manifest = {
+            "schema_version": "analysis-stages-v1", "run_id": run_id,
+            "state": ("FAILED" if release["status"] == "FAILED_GIT_LEDGER"
+                      else "PARTIAL" if release["status"] == "PARTIAL_EVIDENCE"
+                      else "COMPLETE"),
+            "projects": release["project_phase_status"],
+            "failures": release["stage_failures"],
+            "checkpoint_ref": "ledger_checkpoint.json",
+            "report_stage": {"status": "RUNNING",
+                             "output_refs": ["analysis.json", "report.md",
+                                             "ai_review.md"]},
+            "updated_at_utc": datetime.now(timezone.utc).isoformat()}
+        path = root / "stage_manifest.json"
+        temp = root / "stage_manifest.tmp"
+        temp.write_text(json.dumps(stage_manifest, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        temp.replace(path)
     (root / "analysis.json").write_text(
         json.dumps(release, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -439,6 +469,12 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                  "不得因为未输入全部组而声称全面评审。", ""]
     (root / "ai_review.md").write_text("\n".join(ai_lines), encoding="utf-8")
 
+    if manifest is not None:
+        stage_manifest["report_stage"]["status"] = "COMPLETE"
+        stage_manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+        temp.write_text(json.dumps(stage_manifest, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        temp.replace(path)
     if db is not None:
         _register_run(db, run_id, root, release)
     return root, release
