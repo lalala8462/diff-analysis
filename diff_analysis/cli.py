@@ -11,7 +11,7 @@ from .gitops import GitError, check_sha, files_at
 from .review import review_repo, stitch_cross_project
 from .report import markdown
 from .scanner import ScannerError, scan_tree, build_graph
-from .catalog import BaselineError
+from .catalog import BaselineError, validate_project
 from . import baseline_cli
 from . import wizard
 from .release_report import (write_release_bundle, start_ledger_checkpoint,
@@ -52,6 +52,8 @@ def parser():
         child.add_argument('--output', default='report.md')
         child.add_argument('--json-output', default=None)
         child.add_argument('--catalog', action='append', default=[], help='Additional local Git repo pinned as /path/to/repo@<sha>')
+        child.add_argument('--evidence', action='append', default=[],
+                           help='EVIDENCE pair PROJECT=REPO_PATH@BASE_SHA@HEAD_SHA (same SHA allowed)')
         child.add_argument('--run-root', default='.diff-analysis/runs', help='Timestamped evidence report directory')
         child.add_argument('--refactoringminer-bin', default=None,
                            help='Optional local RefactoringMiner executable (-bc JSON)')
@@ -159,10 +161,24 @@ def run(args):
                 specs.append((repo, mr['project'], mr['base'], mr['head']))
                 meta[mr['project']] = {'url': mr['url'], 'head': mr['head']}
 
+        roles = {}
+        for entry in args.evidence:
+            project, sep, rest = entry.partition('=')
+            location, delim, head = rest.rpartition('@')
+            folder, delim2, base = location.rpartition('@')
+            if not sep or not delim or not delim2 or not folder or not base or not head:
+                raise ValueError('Expected --evidence PROJECT=REPO_PATH@BASE_SHA@HEAD_SHA')
+            validate_project(project)
+            if any(row[1] == project for row in specs):
+                raise ValueError('Duplicate evidence project: ' + project)
+            repo = Path(folder).expanduser().resolve()
+            specs.append((repo, project, base, head))
+            roles[(project, base, head)] = 'EVIDENCE'
+
         # P1-A: save independent, immutable Git evidence before compiling or
         # running the optional Java analyzer. An individual scanner failure
         # never discards the saved ledger of another project.
-        bundle_root, manifest = start_ledger_checkpoint(specs, args.run_root)
+        bundle_root, manifest = start_ledger_checkpoint(specs, args.run_root, roles)
         usable = {(l['project'], l['base'], l['head'])
                   for l in manifest['ledgers']}
         for i, (repo, project, base, head) in enumerate(specs):
