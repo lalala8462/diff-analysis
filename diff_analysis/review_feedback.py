@@ -215,6 +215,17 @@ def review_status(run_dir):
     affected = set()
     for rev in state["group_revisions"]:
         affected.update(rev["decisions_needing_review"])
+    superseded_goals = {event["old_goal_id"] for event in
+                        state.get("goal_revision_events", [])}
+    evidence = _load_supplement_state(root)["evidence"]
+    for decision in state["decisions"]:
+        if decision.get("expected_goal_id") in superseded_goals:
+            affected.add(decision["id"])
+        if decision["object_type"] == "QUESTION" and any(
+                event.get("question_id") == decision["object_id"] and
+                event.get("created_at_utc", "") > decision.get("created_at_utc", "")
+                for event in evidence):
+            affected.add(decision["id"])
     for d in state["decisions"]:
         if d["id"] in affected:
             # Applicability is derived, not overwritten in original journal.
