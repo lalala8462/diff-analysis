@@ -95,7 +95,11 @@ def _group_report(group, changes, release):
             "来源：" + change["provenance_status"],
             "变更行提交候选：" + (", ".join(change.get("line_commit_candidates", [])) or "无"),
             "变更行任务号：" + (", ".join(change.get("line_issue_candidates", [])) or "无"),
-            "重构演进关联：" + (", ".join(change.get("evolution_ids", [])) or "无"), "",
+            "重构演进关联：" + (", ".join(change.get("evolution_ids", [])) or "无"),
+            "跨提交元素链：" + (", ".join(change.get("element_chain_ids", [])) or "无"),
+            "人工任务归属（固定SHA）：" +
+            (json.dumps(change.get("manual_attribution"), ensure_ascii=False)
+             if change.get("manual_attribution") else "未提供"), "",
             "**旧版代码（变化附近最多前后各 30 行）**", "",
             _code_lines(change["before"]), "",
             "**新版代码（变化附近最多前后各 30 行）**", "",
@@ -116,6 +120,37 @@ def _group_report(group, changes, release):
                      ev["source"] + " · " + ev["confidence"] +
                      " · " + ev["mapping_status"] + "；旧位置：" +
                      str(ev["old"]) + "；新位置：" + str(ev["new"]))
+    lines += ["", "## 跨多提交的元素身份链（候选）", ""]
+    chain_links = [item for ledger in release["ledgers"]
+                   for item in ledger.get("element_chains", [])
+                   if set(group["change_ids"]).intersection(
+                       item["old_change_ids"] + item["new_change_ids"])]
+    if not chain_links:
+        lines.append("没有经位置关联的跨提交元素链，或事件证据不足。")
+    for chain in chain_links:
+        lines.append("- " + chain["id"] + " · " + chain["status"] +
+                     "，步骤：" + str(chain["step_count"]) +
+                     "，旧端：" + str(chain["old"]) +
+                     "，新端：" + str(chain["new"]))
+        for step in chain["steps"]:
+            lines.append("  - " + step["commit_sha"][:12] +
+                         " / " + step["kind"] + " / " +
+                         str(step["old"].get("element")) + " → " +
+                         str(step["new"].get("element")))
+    lines += ["", "## Extract Method 行为变化风险", ""]
+    risks = [ev for ledger in release["ledgers"]
+             for ev in ledger.get("evolution_relations", [])
+             if (ev.get("behavior_assessment") and
+                 set(group["change_ids"]).intersection(
+                     ev["old_change_ids"] + ev["new_change_ids"]))]
+    if not risks:
+        lines.append("本组没有可关联的提取方法风险证据。")
+    for ev in risks:
+        lines.append("- " + ev["id"] + " · " + ev["kind"] +
+                     " · " + ev["behavior_assessment"]["status"] +
+                     " / " + ev["behavior_assessment"]["reason"] +
+                     " · 引入关注 token：" +
+                     str(ev["behavior_assessment"].get("new_risk_tokens", [])))
     lines += ["", "## 组间交叉检查（不等于已确认业务冲突）", ""]
     matched = [
         edge for edge in release["cross_group_checks"]
@@ -149,12 +184,14 @@ def _group_report(group, changes, release):
 
 
 def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
-                         refactoringminer_bin=None, codetracker_evidence=None):
+                         refactoringminer_bin=None, codetracker_evidence=None,
+                         attribution_rules=None):
     """Generate offline reports; never call or upload source to a model."""
     release = assemble_release(
         specs, reviews, cross_candidates,
         refactoringminer_bin=refactoringminer_bin,
-        codetracker_evidence=codetracker_evidence)
+        codetracker_evidence=codetracker_evidence,
+        attribution_rules=attribution_rules)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_id = stamp + "-" + uuid.uuid4().hex[:8]
     root = Path(run_root).expanduser().resolve() / run_id
@@ -232,6 +269,10 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         for warning in ledger.get("enrichment", {}).get("warnings", []):
             summary.append("  - " + str(warning.get("type")) +
                            "（未影响最终 Diff 台账）")
+        summary.append("  - 可串联身份链：" +
+                       str(ledger.get("enrichment", {}).get("element_chain_count", 0)) +
+                       "；提取方法疑似行为混杂：" +
+                       str(ledger.get("enrichment", {}).get("mixed_behavior_candidates", 0)))
     summary += ["", "## 覆盖与限制", "",
                 "最终差异数：" + str(len(changes)),
                 "未映射 Java 方法数：" +

@@ -258,7 +258,8 @@ def run_wizard(args, input_fn=input, output_fn=print):
                 specs, results, candidates, getattr(args, "run_root", ".diff-analysis/runs"),
                 args.db,
                 refactoringminer_bin=getattr(args, "refactoringminer_bin", None),
-                codetracker_evidence=getattr(args, "codetracker_evidence", None))
+                codetracker_evidence=getattr(args, "codetracker_evidence", None),
+                attribution_rules=getattr(args, "attribution_rules", None))
             output_json.write_text(json.dumps({
                 "comparisons": comparisons, "catalog_revision": store.revision(),
                 "results": results, "cross_candidates": candidates,

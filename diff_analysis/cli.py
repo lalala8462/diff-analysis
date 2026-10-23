@@ -52,6 +52,8 @@ def parser():
                            help='Optional local RefactoringMiner executable (-bc JSON)')
         child.add_argument('--codetracker-evidence', default=None,
                            help='Optional normalized CodeTracker bridge-v1 JSON file')
+        child.add_argument('--attribution-rules', default=None,
+                           help='Exact-SHA Hunk attribution decisions JSON or per-project directory')
         child.add_argument('--db', default='.diff-analysis/state.sqlite3', help='SQLite run index (separate from baseline facts)')
     interactive = sub.add_parser('wizard', help='Interactive multi-project Git revision comparison (CMD/PowerShell)')
     interactive.add_argument('--db', default='.diff-analysis/state.sqlite3')
@@ -60,6 +62,7 @@ def parser():
     interactive.add_argument('--run-root', default='.diff-analysis/runs')
     interactive.add_argument('--refactoringminer-bin', default=None)
     interactive.add_argument('--codetracker-evidence', default=None)
+    interactive.add_argument('--attribution-rules', default=None)
     baseline_cli.configure(sub)
     return p
 
@@ -113,7 +116,8 @@ def run(args):
         bundle, _ = write_release_bundle(
             specs, results, candidates, args.run_root, args.db,
             refactoringminer_bin=args.refactoringminer_bin,
-            codetracker_evidence=args.codetracker_evidence)
+            codetracker_evidence=args.codetracker_evidence,
+            attribution_rules=args.attribution_rules)
         print('Timestamped evidence & candidate groups:', bundle)
         print('Offline AI-ready report:', bundle / 'ai_review.md')
         print('CAUTION: Static analysis is not a proof of compatibility.')

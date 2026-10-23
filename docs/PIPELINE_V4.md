@@ -145,4 +145,21 @@ CodeTracker 主要提供 Java API，本项目**尚未自动调用其 SDK**。新
 
 `tests/test_refactoring_enrichment.py` 包含单次方法重命名、跨类移动、方法提取、跨多提交定位降级、CodeTracker 桥接 SHA 不匹配、安全降级与同一文件不同任务逐行归因。外部 RefactoringMiner 可执行文件不参与基础单测；真实复杂 GitLab 历史仍需本地验收。
 
-已知后续工作：在多提交间构建经过验证的跨重构元素链；为 Extract Method 增加基于 statement mapping 的纯度/行为变化判断；针对 Windows 大仓库建立性能与缓存基准。以上均非当前已完成能力。
+### 增量实现（2026-10-23）：跨提交身份与混杂归属
+
+- `element_history.py` 对 RefactoringMiner 事件沿 Git **first-parent 线性历史**串联重命名、移动及可匹配的连续身份变换。必须满足连续方法名/路径匹配，且事件间没有修改对应文件；出现 merge、缺失中间版本、同名多候选或中途改动会保留 `BOUNDARY_UNVERIFIED` 或警告。输出 `element_chains[]`，链的每一步包含 Commit 和旧新元素位置。此功能不是任意 DAG 或 Java 语义全量追踪；CodeTracker 的跨版本映射仍来自可选的标准化 bridge 文件。
+- `extract_assessment.py` 对有证据的 `Extract Method` / `Extract And Move Method` 读取该步骤父 Commit 的原方法和目标 Commit 的新提取方法。文本上已存在的提取体标记 `TEXTUAL_EXTRACTION_CANDIDATE`；发现新增条件、运算符或字面量标记 `POSSIBLE_MIXED_BEHAVIOR`；否则 `UNVERIFIED_EXTRACTION` 或 `UNKNOWN`。不会声称重构纯度、行为等价或业务 Bug 已确认。参数化、局部变量改名等可能产生保守误报。
+- `attribution_rules.py` 为同一 Commit 混有多个需求提供可审计的人工差异归属：校验 `project + base_sha + head_sha + diff_id`，允许覆盖某一最终 Hunk 的任务编号、保留理由。若一个 Hunk 同时包含两个真实需求，标记 `MIXED_HUNK_REVIEW`，可记录非重叠新版本行 `segments`，但**不会在没有可靠子差异证据时自动把一个 Hunk 拆成两个已确认需求**。无效规则全部拒绝、原始净 Diff 和自动候选保留。
+
+对应 CLI：`--attribution-rules <json-or-directory>`，和原有可选的 `--refactoringminer-bin` / `--codetracker-evidence` 配合。仍然只生成离线 `report.md`、`ai_review.md`、`group_reports/` 与 JSON，无模型网络请求。
+
+### 仍未完成的边界
+
+- 非线性 merge/DAG 的精确跨提交身份链及增量缓存。
+- 针对 Java AST / statement mapping 的高可信 Extract Method 纯度判别。
+- 一个最终 Hunk 里多个任务的**真正代码级拆分**，目前仅能人工标明分段并保持待确认。
+- 对大规模公司内网 Git 历史的性能和分组质量指标，需要真实 MR 与 Windows 实测。
+
+### 验收用例
+
+`tests/test_evolution_chain_and_attribution.py` 覆盖：连续 Rename→Move 链、间隔提交修改导致中断、多条候选避免自动选择、提取体一致/运算符变化、混杂同提交的人工 Hunk 归属、错误 SHA 安全回退、同 Hunk 多任务保留为审核项，以及离线报告输出风险证据。

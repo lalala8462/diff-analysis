@@ -114,7 +114,36 @@ CodeTracker 是 Java 代码元素历史追踪库，目前**未直接嵌入其 Ja
 }
 ~~~
 
-重构证据写入 `analysis.json` 的 `evolution_relations`，并显示在分组报告里。单次提交中位置与净 Diff 匹配时记录双侧关联；多提交中间重构只视作历史候选，不直接冒充最终旧新元素映射。
+重构证据写入 `analysis.json` 的 `evolution_relations`，并显示在分组报告里。多提交重命名/移动事件额外生成 `element_chains`，只有第一父提交线性、元素签名能连续匹配、间隔提交没有改动相关文件时，才标记 `CONTIGUOUS_CANDIDATE`；不满足条件时明确记录 `BOUNDARY_UNVERIFIED` 或其他证据缺口。身份链不代表业务行为等价。
+
+**Extract Method 混杂行为判断**：从每次提取发生时的父提交和当前提交读取 Java 方法代码，检查新提取的方法体是否文本上来自原方法；若提取方法出现原方法没有的条件、运算符或常量，标记 `POSSIBLE_MIXED_BEHAVIOR`，否则仅标记文本候选或证据不足。不会自动认定纯重构，也不替代 RefactoringMiner 的 Purity Checker。
+
+**同一 Commit 包含多个需求**：`git blame` 只能定位最后修改提交，无法从没有任务线索的混杂提交中自动推断真实需求。可使用经过人工核实的 `--attribution-rules`，按**固定项目、旧新 SHA 和最终 D-* 差异 ID**补充任务归属。例如在上次 `analysis.json` 中找到待分组的差异 ID，写入：
+
+~~~json
+{
+  "schema_version": "attribution-rules-v1",
+  "project": "local/cps",
+  "base_sha": "<旧版本完整 SHA>",
+  "head_sha": "<新版本完整 SHA>",
+  "decisions": [
+    {
+      "diff_id": "D-xxxxxxxxxxxxxxxx",
+      "issue_keys": ["PAY-123"],
+      "reason": "已核实对应支付改动"
+    }
+  ]
+}
+~~~
+
+再执行：
+
+~~~powershell
+.\.venv\Scripts\python.exe -m diff_analysis wizard `
+  --attribution-rules "G:\Code\attribution\local_cps.json"
+~~~
+
+多项目建议传一个目录，规则文件名使用 `local_cps.json`、`local_webapi.json`。如果一个 **Hunk 内部**确实混入两个需求，可列出多个 `issue_keys` 和不重叠的 `segments`（新版本的起始行和行数），但该 Hunk 仍保留单独的 `MIXED_HUNK_REVIEW`，不假装能够自动拆成两条确定需求。规则 SHA、差异 ID 或行范围不匹配时拒绝归属，保留原始 Diff。
 
 **需求分组改进：** 在最终差异 Hunk 的新版本行使用 `git blame` 取得最后修改提交，并关联其任务编号；只有存在唯一任务编号时才允许候选合组。当同文件由多个任务提交修改时，能够区分部分混杂变化。遇到删除行、多任务提交、追踪不明时仍保守处理，不因发现重构而自动合并两个需求。
 
@@ -143,7 +172,7 @@ CodeTracker 是 Java 代码元素历史追踪库，目前**未直接嵌入其 Ja
 
 ## 5. 后续计划
 
-- 可选 RefactoringMiner CLI 与 CodeTracker 标准化桥接已支持**重构证据采集**，下一步继续完善多提交跨重构身份链、Hunk 精确归因与纯度判断。
+- 已增加严格边界的多提交身份链、Extract Method 行为混杂启发式检查以及按 SHA/Diff ID 的人工任务归属。下一步继续支持更复杂的非线性 Git 历史、重构纯度与同 Hunk 精细拆分。
 - 丰富分组依据，在不强制合组的前提下借鉴 SmartCommitCore；后续增加 Code Maat 历史共同修改线索。
 - 提高跨服务资源关系解析，建设 A 主链 / 共享资源 / B 主链的证据展示。
 - 后续根据需要增加 Windows 本地 Web 界面；保持分析与模型推理彻底解耦。

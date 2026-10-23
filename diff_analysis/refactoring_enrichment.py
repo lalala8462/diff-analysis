@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .gitops import git
+
 KINDS = {
     "Rename Method", "Move Method", "Move And Rename Method",
     "Extract Method", "Extract And Move Method", "Inline Method",
@@ -96,8 +98,26 @@ def run_refactoringminer(repo, base, head, executable, timeout=120):
                              "detail": proc.stderr[-400:]}]
             if path.stat().st_size > MAX_BYTES:
                 return [], [{"type": "REFACTORING_MINER_OVERSIZE"}]
-            return parse_refactoringminer(
+            events, warnings = parse_refactoringminer(
                 json.loads(path.read_text(encoding="utf-8")), base, head)
+            # RefactoringMiner -bc can return a single *refactoring* commit
+            # even when other commits exist between base and head. Checking
+            # that commit's actual parent prevents applying its old coordinates
+            # to an unrelated net-base revision.
+            for event in events:
+                if event["confidence"] != "DIRECT_COMMIT_CANDIDATE":
+                    continue
+                try:
+                    parents = git(repo, "rev-list", "--parents", "-n", "1",
+                                  event["commit_sha"]).decode().split()
+                except (OSError, RuntimeError):
+                    parents = []
+                if len(parents) != 2 or parents[1] != base:
+                    event["confidence"] = "HISTORY_CANDIDATE"
+                    warnings.append({
+                        "type": "DIRECT_LOCATION_DOWNGRADED",
+                        "commit": event["commit_sha"]})
+            return events, warnings
         except (OSError, subprocess.TimeoutExpired, ValueError, UnicodeError) as exc:
             return [], [{"type": "REFACTORING_MINER_UNAVAILABLE",
                          "detail": type(exc).__name__}]

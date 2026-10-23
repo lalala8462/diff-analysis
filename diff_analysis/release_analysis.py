@@ -11,6 +11,9 @@ from pathlib import Path
 from .gitops import git, diff_files
 from .scanner import method_changes
 from .refactoring_enrichment import run_refactoringminer, load_codetracker_bridge, attach_evolution
+from .element_history import build_identity_chains, attach_chains
+from .extract_assessment import assess_extractions
+from .attribution_rules import apply_attribution_rules
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$", re.M)
@@ -231,20 +234,25 @@ def final_diff_ledger(repo, project, base, head, review=None):
 def candidate_groups(ledgers):
     """Conservative grouping: a unique explicit issue key is the only automatic merge."""
     grouped = defaultdict(list)
-    group_meta = {}
+    group_meta = defaultdict(set)
     for ledger in ledgers:
         for change in ledger["final_changes"]:
             # Prefer last-touch evidence for this final Hunk, which can
             # distinguish unrelated edits to the same file. If blame finds
             # commits without a unique issue, DO NOT fall back to a misleading
             # whole-file label.
+            manual = change.get("manual_attribution")
             line_commits = change.get("line_commit_candidates", [])
             keys = (change.get("line_issue_candidates", [])
                     if line_commits else change["issue_candidates"])
+            if manual:
+                keys = manual["issue_keys"]
             key = ("ISSUE", keys[0]) if len(keys) == 1 else ("SINGLE", change["id"])
             grouped[key].append(change)
-            group_meta[key] = (
-                "LINE_BLAME_ISSUE_CANDIDATE" if key[0] == "ISSUE" and line_commits
+            group_meta[key].add(
+                "HUMAN_EXACT_SHA_DIFF" if manual and len(keys) == 1
+                else "MIXED_HUNK_REVIEW" if manual and len(keys) > 1
+                else "LINE_BLAME_ISSUE_CANDIDATE" if key[0] == "ISSUE" and line_commits
                 else "COMMIT_MESSAGE_ISSUE_CANDIDATE" if key[0] == "ISSUE"
                 else "AMBIGUOUS_OR_UNASSIGNED")
     groups = []
@@ -253,12 +261,16 @@ def candidate_groups(ledgers):
         gid = "G-" + identifier(key[0], key[1], sorted(c["id"] for c in changes))
         groups.append({
             "id": gid, "label": ("候选任务 " + key[1]) if key[0] == "ISSUE" else "未归属变化",
-            "status": "CANDIDATE", "group_basis": group_meta[key],
+            "status": "CANDIDATE",
+            "group_basis": (next(iter(group_meta[key])) if len(group_meta[key]) == 1
+                            else "MIXED_ATTRIBUTION_EVIDENCE"),
+            "evidence_bases": sorted(group_meta[key]),
             "issue_key": key[1] if key[0] == "ISSUE" else None,
             "change_ids": [c["id"] for c in changes],
             "projects": sorted(set(c["project"] for c in changes)),
-            "summary": "依据提交说明的唯一任务编号合组，需人工确认"
-                       if key[0] == "ISSUE" else "暂不自动归属需求；逐项审阅"
+            "summary": ("存在单一任务编号的归属证据（逐行提交或人工），需确认是否同一需求"
+                        if key[0] == "ISSUE" else
+                        "无法唯一归属，保留单独候选；一个 Hunk 可能包含多个任务")
         })
         for change in changes:
             by_change[change["id"]] = gid
@@ -395,7 +407,8 @@ def consumer_candidates(ledgers, by_change, cross_candidates):
     return findings
 
 def assemble_release(specs, reviews=None, cross_candidates=None,
-                     refactoringminer_bin=None, codetracker_evidence=None):
+                     refactoringminer_bin=None, codetracker_evidence=None,
+                     attribution_rules=None):
     """The optional tools only enrich evidence; net Diff always remains intact."""
     ledgers = []
     for repo, project, base, head in specs:
@@ -406,7 +419,12 @@ def assemble_release(specs, reviews=None, cross_candidates=None,
             repo, base, head, refactoringminer_bin) if refactoringminer_bin else ([], [])
         tracker_events, tracker_warnings = load_codetracker_bridge(
             codetracker_evidence, project, base, head)
+        extract_warnings = assess_extractions(repo, ref_events)
+        chain_records, chain_warnings = build_identity_chains(
+            repo, base, head, ref_events) if ref_events else ([], [])
         attach_evolution(ledger, ref_events + tracker_events)
+        attach_chains(ledger, chain_records)
+        attribution_warnings = apply_attribution_rules(ledger, attribution_rules)
         ledger["enrichment"] = {
             "refactoringminer_status": (
                 "NOT_CONFIGURED" if not refactoringminer_bin else
@@ -414,7 +432,13 @@ def assemble_release(specs, reviews=None, cross_candidates=None,
             "codetracker_status": (
                 "NOT_CONFIGURED" if not codetracker_evidence else
                 "PARTIAL" if tracker_warnings else "IMPORTED"),
-            "warnings": ref_warnings + tracker_warnings
+            "warnings": (ref_warnings + tracker_warnings + extract_warnings
+                         + chain_warnings + attribution_warnings),
+            "element_chain_count": len(chain_records),
+            "mixed_behavior_candidates": sum(
+                1 for ev in ref_events
+                if (ev.get("behavior_assessment") or {}).get("status")
+                    == "POSSIBLE_MIXED_BEHAVIOR")
         }
         ledgers.append(ledger)
     groups, by_change = candidate_groups(ledgers)
@@ -422,6 +446,26 @@ def assemble_release(specs, reviews=None, cross_candidates=None,
     existing_links = {(x.get("from_group"), x.get("to_group"), x.get("kind"))
                       for x in intersections}
     for ledger in ledgers:
+        for chain in ledger.get("element_chains", []):
+            gs = sorted({by_change[cid] for cid in
+                         chain["old_change_ids"] + chain["new_change_ids"]
+                         if cid in by_change})
+            if len(gs) > 20:
+                ledger["enrichment"]["warnings"].append({
+                    "type": "ELEMENT_CHAIN_GROUP_LIMIT"})
+                continue
+            for i, ga in enumerate(gs):
+                for gb in gs[i + 1:]:
+                    key = (ga, gb, "ELEMENT_IDENTITY_CHAIN_CANDIDATE")
+                    if key not in existing_links:
+                        existing_links.add(key)
+                        intersections.append({
+                            "id": "X-" + identifier(*key), "from_group": ga,
+                            "to_group": gb, "kind": key[2], "status": "CHECK_TOGETHER",
+                            "evidence": [{"chain_id": chain["id"],
+                                          "status": chain["status"]}],
+                            "limitation": "Element identity candidate is not behavior equivalence"
+                        })
         for ref in ledger.get("evolution_relations", []):
             gs = sorted({by_change[cid] for cid in
                          ref["old_change_ids"] + ref["new_change_ids"]
