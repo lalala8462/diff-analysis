@@ -215,7 +215,7 @@ Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
 
 `CONFORMANCE` 维度的正向判断必须绑定已人工确认的 ExpectedGoal，所有正向判断必须引用有效 D-* 或 EV-* 证据。引用结构合法仍不等于论断成立，外部模型身份与实际阅读范围也不会由工具自动认证。
 
-人工拆分 Hunk、移动评审单元、合并候选组，使用 `group-feedback-v1` 请求文件。示例（从 `analysis.json` 查询实际差异、组及新行范围）：
+人工拆分 Hunk、创建新的拆分组、移动评审单元、合并候选组，使用 `group-feedback-v1` 请求文件。示例（从 `analysis.json` 查询实际差异、组及新行范围）：
 
 ```json
 {
@@ -240,7 +240,7 @@ Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
   --run-dir ".\.diff-analysis\runs\<运行目录>"
 ```
 
-不在人工分配段内的新行保留为未归属 ReviewUnit。旧版子范围不会从新版行机械推算。归属修订记录在 `revisions/`；原 `analysis.json`、D-* 底账不改写。
+另可使用 `SPLIT_GROUP` 操作，指定 `source_group_id`、`diff_ids`、`new_group_label`、`actor`、`reason` 形成新的 `G-MAN-*` 组；`MERGE_GROUPS` 指定 `source_group_ids` 与 `target_group_id`。不在人工分配段内的新行保留为未归属 ReviewUnit。旧版子范围不会从新版行机械推算。归属修订记录在 `revisions/`；原 `analysis.json`、D-* 底账不改写。
 
 如需单独复核某个 AI／人工结论是否被引用依据支持，编写 `basis-checks-v1`，提交 `decision_id`、`actor_kind`、`actor_id`、`status`（SUPPORTED／NOT_SUPPORTED／UNCERTAIN）、`reason` 和 `evidence_ids`，再执行：
 
