@@ -184,7 +184,7 @@ def _group_report(group, changes, release):
     return "\n".join(lines)
 
 
-def start_ledger_checkpoint(specs, run_root):
+def start_ledger_checkpoint(specs, run_root, roles=None):
     """Durably save pinned Git net changes before any Java scanner is called.
 
     A broken Git repository is recorded separately; other projects still retain
@@ -205,21 +205,25 @@ def start_ledger_checkpoint(specs, run_root):
                         encoding="utf-8")
         temp.replace(root / "ledger_checkpoint.json")
 
+    roles = roles or {}
     persist()
     for repo, project, base, head in specs:
         try:
             ledger = final_diff_ledger(repo, project, base, head)
+            ledger["role"] = roles.get((project, base, head), "CHANGE")
         except (OSError, RuntimeError, ValueError) as exc:
             failure = {"project": project, "base": base, "head": head,
                        "stage": "GIT_LEDGER", "error_type": type(exc).__name__,
                        "reason": str(exc)[:500]}
             manifest["failures"].append(failure)
             manifest["projects"].append({"project": project, "base": base,
-                                         "head": head, "git_ledger": "FAILED"})
+                                         "head": head, "git_ledger": "FAILED",
+                                         "role": roles.get((project, base, head), "CHANGE")})
         else:
             manifest["ledgers"].append(ledger)
             manifest["projects"].append({"project": project, "base": base,
-                                         "head": head, "git_ledger": "SAVED"})
+                                         "head": head, "git_ledger": "SAVED",
+                                         "role": ledger["role"]})
         persist()
     manifest["state"] = ("FAILED" if not manifest["ledgers"] else
                          "PARTIAL" if manifest["failures"] else "SAVED")
@@ -314,12 +318,13 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         "> 程序只做 Git/静态分析，不调用任何 AI。"
         "需求组、来源归因、跨组影响均为待核实候选。", "",
         "## 版本范围", "",
-        "| 项目 | 旧版 SHA | 新版 SHA | 最终差异数 | 提交历史状态 |",
-        "| --- | --- | --- | ---: | --- |"
+        "| 项目 | 角色 | 旧版 SHA | 新版 SHA | 最终差异数 | 提交历史状态 |",
+        "| --- | --- | --- | --- | ---: | --- |"
     ]
     for led in release["ledgers"]:
-        summary.append("| %s | %s | %s | %d | %s |" %
-                       (led["project"], led["base"][:12], led["head"][:12],
+        summary.append("| %s | %s | %s | %s | %d | %s |" %
+                       (led["project"], led.get("role", "CHANGE"),
+                        led["base"][:12], led["head"][:12],
                         len(led["final_changes"]), led["history"]["status"]))
     if manifest is not None:
         summary += ["", "## 项目阶段覆盖（失败不代表无影响）", "",
