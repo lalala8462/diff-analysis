@@ -156,10 +156,17 @@ def run(args):
             if not token:
                 raise ValueError('Missing GitLab token in ' + args.token_env)
             for i, url in enumerate(args.mr):
-                mr = get_mr(url, args.allowed_host, token, args.allow_http)
-                repo = clone_mr(mr, root / ('clone-%s' % i), token)
-                specs.append((repo, mr['project'], mr['base'], mr['head']))
-                meta[mr['project']] = {'url': mr['url'], 'head': mr['head']}
+                try:
+                    mr = get_mr(url, args.allowed_host, token, args.allow_http)
+                    repo = clone_mr(mr, root / ('clone-%s' % i), token)
+                    specs.append((repo, mr['project'], mr['base'], mr['head']))
+                    meta[mr['project']] = {'url': mr['url'], 'head': mr['head']}
+                except (GitLabError, GitError, OSError, ValueError) as exc:
+                    scan_failures.append({
+                        'project': url, 'stage': 'PREPARE',
+                        'error_type': type(exc).__name__,
+                        'reason': str(exc)[:500]})
+                    continue
 
         roles = {}
         for entry in args.evidence:
