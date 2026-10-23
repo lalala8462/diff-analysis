@@ -14,6 +14,7 @@ from .refactoring_enrichment import run_refactoringminer, load_codetracker_bridg
 from .element_history import build_identity_chains, attach_chains
 from .extract_assessment import assess_extractions
 from .attribution_rules import apply_attribution_rules
+from .relation_graph import analyze_relations
 
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$", re.M)
@@ -210,7 +211,8 @@ def final_diff_ledger(repo, project, base, head, review=None):
                 "file_category": code_kind, "status": state,
                 "old_range": {"start": old_start, "count": old_count},
                 "new_range": {"start": new_start, "count": new_count},
-                "symbols": symbols, "commit_candidates": candidates,
+                "symbols": symbols, "symbols_old": symbols_old,
+                "symbols_new": symbols_new, "commit_candidates": candidates,
                 "issue_candidates": all_issues,
                 "line_commit_candidates": line_commits,
                 "line_issue_candidates": line_issues,
@@ -420,6 +422,8 @@ def attach_review_to_ledger(ledger, review):
         new_symbols = (_method_overlap(new_methods, change["path"],
                                       new_range["start"], new_range["count"])
                        if new_range["start"] else [])
+        change["symbols_old"] = old_symbols
+        change["symbols_new"] = new_symbols
         change["symbols"] = sorted(set(old_symbols + new_symbols))
         change["status"] = ("SEMANTIC_MAPPED" if change["symbols"] else "NEEDS_REVIEW")
     ledger["coverage"]["unresolved"] = sum(
@@ -519,6 +523,11 @@ def assemble_release(specs, reviews=None, cross_candidates=None,
                     })
     intersections.sort(key=lambda item: item["id"])
     consumers = consumer_candidates(ledgers, by_change, cross_candidates)
+    relation_data = analyze_relations(reviews or [], ledgers, by_change,
+                                      cross_candidates)
+    intersections.extend(relation_data["direct_group_checks"])
+    intersections.sort(key=lambda x: x["id"])
+    consumers.extend(relation_data["internal_consumer_candidates"])
     names = [l["project"] for l in ledgers]
     duplicate_warnings = (
         ["Same project appears in several comparisons: analyses are independent; "
@@ -531,6 +540,7 @@ def assemble_release(specs, reviews=None, cross_candidates=None,
         "ledgers": ledgers, "groups": groups,
         "cross_group_checks": intersections,
         "consumer_candidates": consumers,
+        "relations": relation_data,
         "warnings": duplicate_warnings + [
             "File-level commit attribution is only a candidate",
             "Group membership is not confirmed requirement identity",
