@@ -385,7 +385,8 @@ def supplement(run_dir, request, repos, max_total_bytes=1_000_000, max_rounds=3)
             stage.append((ev_id, content, {"id": ev_id, "request_id": rid,
                 "question_id": qid, "project": project, "sha": sha,
                 "side": side, "path": path, "start": start, "end": end,
-                "bytes": len(content_bytes), "sha256": _hash(content_bytes)}))
+                "bytes": len(content_bytes), "sha256": _hash(content_bytes),
+                "created_at_utc": _utc()}))
             items.append({"request_id": rid, "status": "PROVIDED",
                           "evidence_id": ev_id, "reused": False})
             budget -= len(content_bytes)
