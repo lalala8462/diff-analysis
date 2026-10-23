@@ -16,6 +16,7 @@ from . import baseline_cli
 from . import wizard
 from .release_report import (write_release_bundle, start_ledger_checkpoint,
                              rebuild_from_checkpoint)
+from .review_workflow import supplement, import_review
 
 
 def catalog_result(repo, sha, root, cache):
@@ -71,6 +72,15 @@ def parser():
     rebuild.add_argument('--checkpoint', required=True, help='Path to ledger_checkpoint.json')
     rebuild.add_argument('--run-root', default='.diff-analysis/runs')
     rebuild.add_argument('--db', default='.diff-analysis/state.sqlite3')
+    fetch = sub.add_parser('supplement', help='Read bounded code at fixed project SHA')
+    fetch.add_argument('--run-dir', required=True)
+    fetch.add_argument('--request', required=True, help='evidence-requests-v1 JSON file')
+    fetch.add_argument('--repo', action='append', required=True,
+                       help='Repeat PROJECT=LOCAL_GIT_PATH; repo is validated against pinned SHA')
+    review_import = sub.add_parser('import-review',
+                                   help='Append manual and offline-AI decisions')
+    review_import.add_argument('--run-dir', required=True)
+    review_import.add_argument('--file', required=True, help='review-import-v1 JSON')
     baseline_cli.configure(sub)
     return p
 
@@ -78,6 +88,22 @@ def parser():
 def run(args):
     if args.command == 'wizard':
         wizard.run_wizard(args)
+        return
+    if args.command == 'supplement':
+        repos = {}
+        for pair in args.repo:
+            project, sep, path = pair.partition('=')
+            if not sep or not project or not path or project in repos:
+                raise ValueError('Expected unique --repo PROJECT=LOCAL_GIT_PATH')
+            repos[project] = path
+        result = supplement(args.run_dir,
+                            json.loads(Path(args.request).read_text('utf-8')), repos)
+        print('Evidence supplement:', json.dumps(result, ensure_ascii=False))
+        return
+    if args.command == 'import-review':
+        result = import_review(args.run_dir,
+                               json.loads(Path(args.file).read_text('utf-8')))
+        print('Imported offline review:', json.dumps(result, ensure_ascii=False))
         return
     if args.command == 'rebuild-checkpoint':
         root, release = rebuild_from_checkpoint(args.checkpoint, args.run_root, args.db)
