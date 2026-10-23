@@ -14,7 +14,8 @@ from .scanner import ScannerError, scan_tree, build_graph
 from .catalog import BaselineError
 from . import baseline_cli
 from . import wizard
-from .release_report import write_release_bundle, start_ledger_checkpoint
+from .release_report import (write_release_bundle, start_ledger_checkpoint,
+                             rebuild_from_checkpoint)
 
 
 def catalog_result(repo, sha, root, cache):
@@ -63,6 +64,11 @@ def parser():
     interactive.add_argument('--refactoringminer-bin', default=None)
     interactive.add_argument('--codetracker-evidence', default=None)
     interactive.add_argument('--attribution-rules', default=None)
+    rebuild = sub.add_parser('rebuild-checkpoint',
+                             help='Rebuild offline reports from a saved Git ledger (no JDK or Git reads)')
+    rebuild.add_argument('--checkpoint', required=True, help='Path to ledger_checkpoint.json')
+    rebuild.add_argument('--run-root', default='.diff-analysis/runs')
+    rebuild.add_argument('--db', default='.diff-analysis/state.sqlite3')
     baseline_cli.configure(sub)
     return p
 
@@ -70,6 +76,12 @@ def parser():
 def run(args):
     if args.command == 'wizard':
         wizard.run_wizard(args)
+        return
+    if args.command == 'rebuild-checkpoint':
+        root, release = rebuild_from_checkpoint(args.checkpoint, args.run_root, args.db)
+        print('Rebuilt evidence report:', root / 'report.md')
+        print('Offline AI-ready report:', root / 'ai_review.md')
+        print('Status:', release['status'], '(Java/static scan NOT rerun)')
         return
     if baseline_cli.handle(args):
         return
