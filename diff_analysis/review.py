@@ -63,10 +63,11 @@ def review_repo(repo, project, base, head, workdir, cache):
                            'old_version': old_v, 'new_version': new_v})
     return {'project': project, 'base': base, 'head': head,
             'changed_files': changed_files, 'changed_methods': sorted(changed),
-            'methods': new, 'old_methods': old, 'calls': calls,
+            'methods': new, 'old_methods': old, 'calls': calls, 'old_calls': old_calls,
             'impact_paths': impact, 'old_impact_paths': old_impact,
             'new_impact_paths': new_impact, 'unresolved': new_unresolved,
-            'old_unresolved_count': len(old_unresolved), 'api_issues': api_issues,
+            'old_unresolved_count': len(old_unresolved), 'old_unresolved': old_unresolved,
+            'api_issues': api_issues,
             'warnings': [*('old: ' + s for s in skipped_old), *('new: ' + s for s in skipped_new),
                          *('old parse: ' + x['path'] for x in old_errors),
                          *('new parse: ' + x['path'] for x in errors)] + (['impact traversal limit reached'] if limited or old_limited or new_limited else []),
@@ -74,24 +75,35 @@ def review_repo(repo, project, base, head, workdir, cache):
 
 
 def stitch_cross_project(results):
-    """Find conservative candidate callers in other projects; never claim confirmed call."""
-    by_target = defaultdict(list)
-    for r in results:
-        for symbol in r['changed_methods']:
-            m = r['methods'].get(symbol) or r['old_methods'].get(symbol)
-            if m:
-                by_target[(m['name'], int(m['arity']))].append((r['project'], symbol, m['class']))
+    """Weak name/arity cross-project matches, separately per pinned side.
+
+    EVIDENCE projects participate even if they have no changed methods.
+    Matching does not prove that any RPC or class binding actually exists.
+    """
     candidates = []
-    for r in results:
-        for c in r['unresolved']:
-            targets = by_target.get((c['name'], c['arity']), [])
-            for project, symbol, full_class in targets:
-                if project == r['project']:
-                    continue
-                recv_type = c.get('receiver_type', '')
-                if recv_type and recv_type.split('.')[-1] != full_class.split('.')[-1]:
-                    continue
-                candidates.append({'caller_project': r['project'], 'caller': c['owner'],
-                                   'callee_project': project, 'callee': symbol,
-                                   'path': c['path'], 'line': c['line'], 'status': 'CANDIDATE'})
+    for side in ("BASE", "HEAD"):
+        by_target = defaultdict(list)
+        for r in results:
+            symbols = r.get("old_methods", {}) if side == "BASE" else r.get("methods", {})
+            # Old callers can target methods modified or removed in the new tree.
+            for symbol in r.get("changed_methods", []):
+                m = symbols.get(symbol)
+                if m:
+                    by_target[(m["name"], int(m["arity"]))].append(
+                        (r["project"], symbol, m["class"]))
+        for r in results:
+            unresolved = r.get("old_unresolved", []) if side == "BASE" else r.get("unresolved", [])
+            for call in unresolved:
+                for project, symbol, full_class in by_target.get(
+                        (call["name"], call["arity"]), []):
+                    if project == r["project"]:
+                        continue
+                    recv_type = call.get("receiver_type", "")
+                    if recv_type and recv_type.split(".")[-1] != full_class.split(".")[-1]:
+                        continue
+                    candidates.append({
+                        "side": side, "caller_project": r["project"],
+                        "caller": call["owner"], "callee_project": project,
+                        "callee": symbol, "path": call["path"], "line": call["line"],
+                        "status": "BINDING_UNCONFIRMED"})
     return candidates
