@@ -406,15 +406,43 @@ def consumer_candidates(ledgers, by_change, cross_candidates):
                 "limitation": "Unmodified consumer or no group mapping; confirm actual type/RPC"})
     return findings
 
+def attach_review_to_ledger(ledger, review):
+    """Enrich a persisted Git inventory without changing Diff identities."""
+    old_methods = review.get("old_methods", {})
+    new_methods = review.get("methods", {})
+    for change in ledger["final_changes"]:
+        if change["file_category"] != "JAVA" or change["status"] == "UNSUPPORTED":
+            continue
+        old_range, new_range = change["old_range"], change["new_range"]
+        old_symbols = (_method_overlap(old_methods, change["old_path"],
+                                      old_range["start"], old_range["count"])
+                       if old_range["start"] else [])
+        new_symbols = (_method_overlap(new_methods, change["path"],
+                                      new_range["start"], new_range["count"])
+                       if new_range["start"] else [])
+        change["symbols"] = sorted(set(old_symbols + new_symbols))
+        change["status"] = ("SEMANTIC_MAPPED" if change["symbols"] else "NEEDS_REVIEW")
+    ledger["coverage"]["unresolved"] = sum(
+        c["status"] != "SEMANTIC_MAPPED" for c in ledger["final_changes"])
+
+
 def assemble_release(specs, reviews=None, cross_candidates=None,
                      refactoringminer_bin=None, codetracker_evidence=None,
-                     attribution_rules=None):
+                     attribution_rules=None, precomputed_ledgers=None):
     """The optional tools only enrich evidence; net Diff always remains intact."""
     ledgers = []
+    pinned_ledgers = {(l["project"], l["base"], l["head"]): l
+                      for l in (precomputed_ledgers or [])}
     for repo, project, base, head in specs:
-        ledger = final_diff_ledger(
-            repo, project, base, head,
-            next((r for r in (reviews or []) if r["project"] == project), None))
+        review = next((r for r in (reviews or [])
+                       if (r["project"], r["base"], r["head"]) ==
+                       (project, base, head)), None)
+        if precomputed_ledgers is None:
+            ledger = final_diff_ledger(repo, project, base, head, review)
+        else:
+            ledger = pinned_ledgers[(project, base, head)]
+            if review is not None:
+                attach_review_to_ledger(ledger, review)
         ref_events, ref_warnings = run_refactoringminer(
             repo, base, head, refactoringminer_bin) if refactoringminer_bin else ([], [])
         tracker_events, tracker_warnings = load_codetracker_bridge(
