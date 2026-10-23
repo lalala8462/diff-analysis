@@ -96,11 +96,11 @@ class LedgerCheckpointTests(unittest.TestCase):
             source = first / "ledger_checkpoint.json"
             before = source.read_bytes()
             with patch("diff_analysis.release_report.final_diff_ledger",
-                       side_effect=AssertionError("must not re-run Git")), \\
-                    patch("diff_analysis.scanner.scan_tree",
-                          side_effect=AssertionError("must not run Java")):
-                rebuilt, release = rebuild_from_checkpoint(
-                    source, root / "runs", root / "state.sqlite3")
+                       side_effect=AssertionError("must not re-run Git")):
+                with patch("diff_analysis.scanner.scan_tree",
+                           side_effect=AssertionError("must not run Java")):
+                    rebuilt, release = rebuild_from_checkpoint(
+                        source, root / "runs", root / "state.sqlite3")
             self.assertNotEqual(first, rebuilt)
             self.assertEqual(before, source.read_bytes())
             self.assertEqual("PARTIAL_EVIDENCE", release["status"])
