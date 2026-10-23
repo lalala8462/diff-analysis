@@ -288,6 +288,8 @@ def group_intersections(ledgers, groups, by_change, reviews=None, cross_candidat
     by_path = defaultdict(list)
     by_symbol = defaultdict(list)
     for c in changes:
+        if c["id"] not in by_change:
+            continue
         gid = by_change[c["id"]]
         by_path[(c["project"], c["path"])].append((gid, c))
         for s in c["symbols"]:
@@ -387,6 +389,8 @@ def consumer_candidates(ledgers, by_change, cross_candidates):
     by_symbol = defaultdict(list)
     for l in ledgers:
         for c in l["final_changes"]:
+            if c["id"] not in by_change:
+                continue
             for symbol in c["symbols"]:
                 by_symbol[(c["project"], symbol)].append(c)
     findings = []
