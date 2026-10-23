@@ -104,13 +104,16 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
 - 内网 GitLab 若只能使用 HTTP，必须显式附加 `--allow-http`。这会明文传输凭据，**仅在已确认可信的隔离网络中使用**，优先启用 HTTPS。
 - 支持将未修改、但可能是调用方的**本地其他仓库**加入静态扫描：重复追加 `--catalog "D:\repos\other-service@<完整CommitSHA>"`，该仓库必须已经存在且含有对应 SHA。
 
-成功后终端打印独立运行目录及 `ai_review.md` 的完整路径。默认每次创建 `.diff-analysis/runs/<UTC日期时间>-<随机标识>/`，例如 `20261023T050000Z-a1b2c3d4` 对应北京时间 2026-10-23 13:00：
+非交互 `review-local` / `review-mrs` 入口会先逐项目保存 Git 底账，然后尝试 Java 分析。JDK 缺失或部分项目扫描失败时仍生成部分报告，`analysis.json` 的 `status=PARTIAL_EVIDENCE`，并标出 `stage_failures`；保留的 Git 差异不表示依赖扫描完整。手动保留 `ledger_checkpoint.json` 便于诊断，自动重建命令尚未实现；向导当前仍可能在基线扫描阶段中止。
+
+执行后终端打印独立运行目录及 `ai_review.md` 的完整路径。默认每次创建 `.diff-analysis/runs/<UTC日期时间>-<随机标识>/`，例如 `20261023T050000Z-a1b2c3d4` 对应北京时间 2026-10-23 13:00：
 
 | 文件 | 内容 |
 | --- | --- |
 | `report.md` | 候选需求组、静态交叉线索和覆盖缺口，优先作为人工阅读入口 |
 | `ai_review.md` | 分组与代码上下文，供用户在工具外交给本地 AI |
-| `analysis.json` | 最终差异、来源候选、归属和可选结构映射等资料 |
+| `analysis.json` | 最终差异、来源候选、归属和可选结构映射等资料；包含阶段状态和失败原因 |
+| `ledger_checkpoint.json` | 非交互 CLI 在扫描前原子保存的逐项目 Git 底账与失败记录；向导暂未接入 |
 | `evidence/D-*.md` | 单条差异、固定版本和两侧代码窗口 |
 | `group_reports/G-*.md` | 单组提交、变化、代码与交叉线索 |
 
