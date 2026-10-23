@@ -153,7 +153,8 @@ def build_graph(methods, calls):
             reverse[candidates[0]].add(owner)
         else:
             unresolved.append({"owner": owner, "name": name, "receiver": recv,
-                               "arity": arity, "path": call["path"], "line": call["line"],
+                               "arity": arity, "receiver_type": typ,
+                               "path": call["path"], "line": call["line"],
                                "candidate_count": len(candidates)})
     return reverse, unresolved
 
