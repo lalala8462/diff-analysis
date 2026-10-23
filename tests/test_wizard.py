@@ -144,6 +144,32 @@ class WizardTests(unittest.TestCase):
                 self.assertIsNone(store.snapshot("rhf/one", "V1.1"))
                 self.assertEqual("SOURCE_HEAD_ONLY", store.candidates()[0]["state"])
 
+    def test_evidence_project_accepts_identical_sha_without_change_group(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, sha, _ = sample_repo(tmp, "consumer")
+            root = Path(tmp)
+            args = SimpleNamespace(
+                db=str(root / "catalog.sqlite3"),
+                output=str(root / "report.md"),
+                json_output=str(root / "report.json"),
+                run_root=str(root / "runs"))
+            responses = [
+                "3", str(repo), "team/consumer",
+                "V1.0", "V1.0", "", "", "",
+                "0", "y"
+            ]
+            self.assertTrue(run_wizard(args, answers(responses), lambda _: None))
+            runs = list((root / "runs").iterdir())
+            self.assertEqual(1, len(runs))
+            data = json.loads((runs[0] / "analysis.json").read_text("utf-8"))
+            self.assertEqual("EVIDENCE", data["ledgers"][0]["role"])
+            self.assertEqual([], data["groups"])
+            self.assertEqual(sha, data["ledgers"][0]["base"])
+            self.assertEqual(sha, data["ledgers"][0]["head"])
+            with CatalogStore(args.db) as store:
+                self.assertIsNone(store.snapshot("team/consumer", "V1.0"))
+
+
     def test_invalid_equal_revisions_do_not_create_catalog(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, _, _ = sample_repo(tmp, "one")
