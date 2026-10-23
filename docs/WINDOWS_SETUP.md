@@ -135,6 +135,122 @@ Remove-Variable secret, ptr -ErrorAction SilentlyContinue
 Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
 ```
 
+## 4.1 新增：证据项目与离线审核闭环（待集成验证）
+
+证据项目可以有独立的两个 SHA，也允许两侧是同一个 SHA；不自动把 EVIDENCE 项目的变化当作本次发布需求。交互向导选择 **3=本地证据项目**。非交互入口可追加：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis review-local `
+  --repo "D:\repos\spms-back" --base "<完整旧SHA>" --head "<完整新SHA>" `
+  --project "rhf/spms-back" `
+  --evidence "rhf/reconciliation=D:\repos\reconciliation@<完整旧SHA>@<完整新SHA>"
+```
+
+成功或部分失败的运行目录将包含 `ledger_checkpoint.json`、`stage_manifest.json`、`questions.json`、`questions.md` 和 `evidence_manifest.json`。`analysis.json` 的 `relations.graphs` 分别记录 BASE／HEAD 边、未解析调用与影响传播；名称／参数数目匹配仍只是候选。
+
+从 `questions.json` 查询真实 `Q-...` 编号，编写请求文件 `request.json`：
+
+```json
+{
+  "schema_version": "evidence-requests-v1",
+  "selectors": [{
+    "question_id": "Q-替换为本次问题编号",
+    "project": "rhf/spms-back",
+    "sha": "替换为该项目对应侧的完整CommitSHA",
+    "side": "HEAD",
+    "path": "src/main/java/example/PayService.java",
+    "start": 10,
+    "end": 70,
+    "reason": "检查改动涉及的完整方法及调用条件"
+  }]
+}
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis supplement `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" `
+  --request ".\request.json" `
+  --repo "rhf/spms-back=D:\repos\spms-back"
+```
+
+补证读取固定 Git 对象，拒绝越界路径和不匹配 SHA；单请求最大 500 行、原始文件 2 MB，默认累计 1 MB／最多 3 轮。新增证据写入 `supplements/`，无新增有效证据会标记停止。不会自行查找未纳入批次的项目，也不会执行仓库代码。
+
+人工确认目标／规则及外部 AI 结论通过本地 `review-import-v1` JSON 导入，例如：
+
+```json
+{
+  "schema_version": "review-import-v1",
+  "expected_goals": [{
+    "id": "GOAL-payment-1",
+    "status": "HUMAN_CONFIRMED",
+    "author": "reviewer",
+    "text": "原有支付成功状态的处理逻辑必须继续兼容"
+  }],
+  "rule_points": [{
+    "id": "RULE-payment-1",
+    "expected_goal_id": "GOAL-payment-1",
+    "status": "CANDIDATE",
+    "author": "local-model",
+    "condition": "收到支付成功状态时需要处理通知",
+    "expected_behavior": "消费者必须正确识别状态并继续处理",
+    "invariant": "相同交易不能重复结算"
+  }],
+  "decisions": [{
+    "object_type": "QUESTION",
+    "object_id": "Q-替换为本次问题编号",
+    "dimension": "IMPACT",
+    "actor_kind": "AI",
+    "actor_id": "local-model",
+    "verdict": "INSUFFICIENT_EVIDENCE",
+    "reason": "目前没有核实消费者真实版本及绑定",
+    "evidence_ids": []
+  }]
+}
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis import-review `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" --file ".\review-import.json"
+```
+
+`CONFORMANCE` 维度的正向判断必须绑定已人工确认的 ExpectedGoal，所有正向判断必须引用有效 D-* 或 EV-* 证据。引用结构合法仍不等于论断成立，外部模型身份与实际阅读范围也不会由工具自动认证。
+
+人工拆分 Hunk、移动评审单元、合并候选组，使用 `group-feedback-v1` 请求文件。示例（从 `analysis.json` 查询实际差异、组及新行范围）：
+
+```json
+{
+  "schema_version": "group-feedback-v1",
+  "actions": [{
+    "action": "SPLIT_HUNK",
+    "diff_id": "D-替换为本次差异ID",
+    "actor": "reviewer",
+    "reason": "这个Hunk包含不同需求的两个可独立核查片段",
+    "segments": [
+      {"start": 15, "count": 2, "group_id": "G-替换为候选组ID"}
+    ]
+  }]
+}
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis revise-groups `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" --file ".\group-feedback.json"
+
+.\.venv\Scripts\python.exe -m diff_analysis review-status `
+  --run-dir ".\.diff-analysis\runs\<运行目录>"
+```
+
+不在人工分配段内的新行保留为未归属 ReviewUnit。旧版子范围不会从新版行机械推算。归属修订记录在 `revisions/`；原 `analysis.json`、D-* 底账不改写。
+
+如需单独复核某个 AI／人工结论是否被引用依据支持，编写 `basis-checks-v1`，提交 `decision_id`、`actor_kind`、`actor_id`、`status`（SUPPORTED／NOT_SUPPORTED／UNCERTAIN）、`reason` 和 `evidence_ids`，再执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis import-basis-check `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" --file ".\basis-checks.json"
+```
+
+这只是独立的判断依据记录，不代表静态关系已转化为真实业务依赖，也不会自动发布或执行被分析项目。
+
 ## 5. 不依赖 GitLab：先分析本地 Git 项目
 
 非交互入口需要一对**完整 Commit SHA**（40／64 位，按仓库对象格式；不是分支名或短 SHA）。先用 `rev-parse` 解析：
