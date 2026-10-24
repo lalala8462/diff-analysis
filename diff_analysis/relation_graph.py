@@ -21,7 +21,10 @@ def side_graph(review, side, max_edges=100000):
     calls = review.get("old_calls", []) if side == "BASE" else review.get("calls", [])
     by_full = defaultdict(list)
     by_simple = defaultdict(list)
+    by_binding = defaultdict(list)
     for symbol, method in methods.items():
+        if method.get("binding_id"):
+            by_binding[method["binding_id"]].append(symbol)
         name, arity = method["name"], int(method["arity"])
         by_full[(method["class"], name, arity)].append(symbol)
         by_simple[(method["class"].split(".")[-1].split("$")[-1],
@@ -36,7 +39,12 @@ def side_graph(review, side, max_edges=100000):
         recv = call.get("receiver", "")
         typ = call.get("receiver_type", "")
         name, arity = call["name"], int(call["arity"])
-        if not recv or recv in ("this", "super"):
+        target = call.get("target_binding_id")
+        if target:
+            candidates = by_binding.get(target, [])
+            resolution = "JAVAC_METHOD_SYMBOL"
+            strength = "RESOLVED_CODE_RELATION"
+        elif not recv or recv in ("this", "super"):
             candidates = by_full.get((methods[owner]["class"], name, arity), [])
             resolution = "SAME_CLASS_NAME_ARITY"
             strength = "STATIC_CANDIDATE"  # overloading and inheritance not fully resolved
@@ -50,7 +58,8 @@ def side_graph(review, side, max_edges=100000):
             resolution, strength = "TYPE_UNKNOWN", "BINDING_UNCONFIRMED"
         if len(candidates) != 1:
             unresolved.append({**call, "side": side, "reason": (
-                "AMBIGUOUS_CALL" if candidates else "TARGET_NOT_FOUND"),
+                "AMBIGUOUS_CALL" if candidates else
+                "ATTRIBUTED_TARGET_NOT_INDEXED" if target else "TARGET_NOT_FOUND"),
                                "candidate_count": len(candidates)})
             continue
         if len(edges) >= max_edges:
@@ -67,8 +76,9 @@ def side_graph(review, side, max_edges=100000):
             "path": call.get("path"), "line": call.get("line"),
             "kind": "JAVA_CALL", "resolution": resolution,
             "status": strength,
-            "binding": "NOT_TYPE_CHECKED",
-            "limitation": "AST name/arity candidate, not complete Java resolution"
+            "binding": "JAVAC_ATTRIBUTED" if target else "NOT_TYPE_CHECKED",
+            "limitation": ("" if target else
+                           "AST name/arity candidate, not complete Java resolution")
         })
     return {"project": project, "snapshot_sha": sha, "side": side,
             "methods": sorted(methods), "edges": edges,
