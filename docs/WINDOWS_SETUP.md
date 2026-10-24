@@ -251,6 +251,112 @@ Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
 
 这只是独立的判断依据记录，不代表静态关系已转化为真实业务依赖，也不会自动发布或执行被分析项目。
 
+## 4.2 Java 精确符号归属与四类协议绑定（新增，待验证）
+
+Java 扫描现在优先采用 javac 本身的符号归属结果。当调用目标可以唯一映射到同版 Java AST 方法时标记 `JAVAC_ATTRIBUTED`；未能解析的第三方库、动态代理、反射等保留为 `STATIC_CANDIDATE` 或未解析调用。
+
+没有 JAR 清单时仍按本地源码与 JDK 扫描，不会自动下载 Maven 依赖。需要更准确类型解析时，生成 `java-classpath.json`：
+
+```json
+{
+  "schema_version": "java-classpath-v1",
+  "projects": [{
+    "project": "rhf/spms-back",
+    "base_sha": "<完整旧SHA>",
+    "head_sha": "<完整新SHA>",
+    "base": [{"path": "D:\\libs\\old-api.jar", "sha256": "<64字符SHA256>"}],
+    "head": [{"path": "D:\\libs\\new-api.jar", "sha256": "<64字符SHA256>"}]
+  }]
+}
+```
+
+每个 SHA 的 JAR 分别校验实际文件的 SHA-256；不允许默默使用当前最新版代替历史依赖。执行 `review-local` 或 `review-mrs` 时附加 `--java-classpath-manifest .\\java-classpath.json`；向导 `wizard` 同样接受此参数。若清单格式或哈希错误，Git 底账保留，静态扫描报告标记失败。
+
+先获取跨系统协议候选的原始源码证据（提供本次运行涉及的所有需要扫描的仓库）：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis discover-connections `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" `
+  --repo "rhf/spms-back=D:\\repos\\spms-back" `
+  --repo "rhf/consumer=D:\\repos\\consumer"
+```
+
+读取 `protocol_discovery_latest.json`，根据实际代码、XML、SQL 完善两端身份，生成 `bindings.json`。例如 Dubbo 的两端均需要 interface、group、version、registry、service_id；HTTP 需要 method、path、target_service、environment、service_id；MQ 需要 broker、destination、route、environment、service_id；数据库需要 datasource、schema、table、environment、service_id。**字段完整不代表字段内容已经核实**。示例：
+
+```json
+{
+  "schema_version": "connection-bindings-v1",
+  "observations": [
+    {
+      "project": "rhf/spms-back", "side": "HEAD", "sha": "<spms固定HEAD-SHA>",
+      "kind": "DUBBO", "role": "PROVIDER",
+      "identity": {
+        "interface": "com.example.PayService", "group": "default",
+        "version": "1.0", "registry": "zk-uat", "service_id": "payment"
+      },
+      "evidence": {
+        "path": "src/main/java/com/example/PayService.java",
+        "start": 10, "end": 20, "contains": ["PayService"]
+      },
+      "deployment_binding": {
+        "author": "reviewer", "environment": "uat", "service_id": "payment",
+        "reason": "已核对对应环境部署配置与双方依赖版本"
+      }
+    }
+  ]
+}
+```
+
+再为消费者加入相同协议身份、但项目和 SHA 独立的 `CONSUMER` 观察记录，然后执行：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis bind-connections `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" --file ".\\bindings.json" `
+  --repo "rhf/spms-back=D:\\repos\\spms-back" `
+  --repo "rhf/consumer=D:\\repos\\consumer"
+```
+
+结果在 `bindings_latest.json` 和 `bindings/bindings-*.json`。无部署声明时为 `BINDING_UNCONFIRMED`；匹配且双方声明齐全时也只标 `USER_ATTESTED_MATCH`，**不表示已经联网核实 Dubbo/Zookeeper、MQ 或数据库的真实运行绑定**。本地工具不会自动建立生产连接。
+
+从 `analysis.json` 的 `relations.graphs[].method_index` 查找固定版本完整方法的 symbol、path、start/end；使用 `semantic-evidence-v1` JSON 请求按需提取：
+
+```json
+{
+  "schema_version": "semantic-evidence-v1",
+  "selectors": [
+    {
+      "question_id": "Q-替换为本次编号",
+      "project": "rhf/spms-back", "side": "HEAD",
+      "sha": "<完整固定SHA>", "kind": "METHOD",
+      "symbol": "com.example.PayService#pay(java.lang.String)"
+    },
+    {
+      "question_id": "Q-替换为本次编号",
+      "project": "rhf/spms-back", "side": "HEAD",
+      "sha": "<完整固定SHA>", "kind": "CONTRACT",
+      "path": "src/main/java/com/example/PayResponse.java"
+    }
+  ]
+}
+```
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis semantic-evidence `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" --file ".\\semantic.json" `
+  --repo "rhf/spms-back=D:\\repos\\spms-back"
+```
+
+结果写入 `supplements/`，与原行区间补证共享轮次与累计字节预算；文件太大不静默截断。
+
+每次 `revise-groups` 会自动生成 `recomputed_latest.json` 和版本化 `revisions/recomputed-*.json`。如需按最近的人工修订重算：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis recompute-review `
+  --run-dir ".\.diff-analysis\runs\<运行目录>"
+```
+
+派生报告含受影响组、复用传播数量、直接跨组候选、消费者与覆盖缺口。拆分 Hunk 只有新版子行范围时，BASE 侧不能推出旧版一一对应范围。原 Git 底账和主 `analysis.json` 不会覆盖。
+
 ## 5. 不依赖 GitLab：先分析本地 Git 项目
 
 非交互入口需要一对**完整 Commit SHA**（40／64 位，按仓库对象格式；不是分支名或短 SHA）。先用 `rev-parse` 解析：
@@ -349,7 +455,7 @@ javac 编译诊断按 UTF-8 输出。当前入口先扫描后生成新底账，J
 - 可分析多个 MR，但尚不验证多个 MR 临时合并后的组合树和冲突。
 - 尚不自动接入 ZK、RabbitMQ、Redis、ES 或完整数据库字段级依赖。
 - **不会自动发现所有未知程序 D**。可手动用 `--catalog` 纳入未修改仓库；跨项目按方法名匹配只算候选关系。
-- 程序不运行模型，没有 Web UI；只导出离线资料。补证请求、完整结论导入与重审仍是待实施设计，报告不能宣称业务完整或安全。
+- 程序不运行模型，没有 Web UI；只导出离线资料。已有受限补证、独立结论导入与修订重审的本地接口，但真实业务验证仍待进行，报告不能宣称业务完整或安全。
 - 单元测试范围见 [CHANGELOG](../CHANGELOG.md)；公司内网 GitLab 的 Token、TLS、代理仍需实际验证。网络不通时同时检查本地代理配置，不关闭证书校验。
 
 ## 8. 其他平台入口
