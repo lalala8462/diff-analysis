@@ -346,7 +346,18 @@ Java 扫描现在优先采用 javac 本身的符号归属结果。当调用目�
   --repo "rhf/spms-back=D:\\repos\\spms-back"
 ```
 
-结果写入 `supplements/`，与原行区间补证共享轮次与累计字节预算；文件太大不静默截断。
+结果写入 `supplements/`，与原行区间补证共享轮次与累计字节预算；文件太大不静默截断。最新覆盖记录在 `evidence_manifest_latest.json`，原始 `evidence_manifest.json` 不覆盖。
+
+也可以从问题自动生成完整方法与明确的 API/DTO 契约请求，不必逐个填写 symbol：
+
+```powershell
+.\.venv\Scripts\python.exe -m diff_analysis auto-evidence `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" `
+  --repo "rhf/spms-back=D:\\repos\\spms-back" `
+  --repo "rhf/consumer=D:\\repos\\consumer"
+```
+
+`auto_evidence_plan.json` 保存不超过 50 个固定版本选择器与遗漏理由。只有已索引方法或明确命名的 API／DTO／Request／Response 等文件会被自动选择；不会无差别导出所有源码、敏感配置，也不会在 JDK 失败后猜测方法范围。新增证据与阅读范围仍不能证明实际 AI 阅读过该文件。
 
 每次 `revise-groups` 会自动生成 `recomputed_latest.json` 和版本化 `revisions/recomputed-*.json`。如需按最近的人工修订重算：
 
