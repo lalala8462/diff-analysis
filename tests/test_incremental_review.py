@@ -67,7 +67,7 @@ class IncrementalReviewTests(unittest.TestCase):
             self.assertTrue((root / "recomputed_latest.json").is_file())
             impact = json.loads((root / "recomputed_latest.json").read_text("utf-8"))
             self.assertEqual(1, impact["revision"])
-            self.assertTrue(any(x["from_group"] == G2 for x in impact["direct_group_checks"]))
+            self.assertTrue(any(x["to_group"] == G2 for x in impact["direct_group_checks"]))
             second = move(G1)
             self.assertIsNone(second["recompute_error"])
             self.assertGreaterEqual(second["recomputed"]["reused_groups"], 1)
