@@ -187,8 +187,8 @@ public final class JavaAstScanner {
     }
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 1) {
-            System.err.println("Usage: JavaAstScanner <source-root>");
+        if (args.length != 1 && args.length != 2) {
+            System.err.println("Usage: JavaAstScanner <source-root> [explicit-local-classpath]");
             System.exit(2);
         }
         final Path root = Paths.get(args[0]).toAbsolutePath().normalize();
@@ -205,10 +205,15 @@ public final class JavaAstScanner {
                     try {
                         DiagnosticCollector<JavaFileObject> diagnostics =
                             new DiagnosticCollector<JavaFileObject>();
+                        List<String> options = new ArrayList<String>(Arrays.asList(
+                            "-proc:none", "-implicit:none", "-sourcepath",
+                            root.toString()));
+                        if (args.length == 2 && !args[1].isEmpty()) {
+                            options.add("-classpath");
+                            options.add(args[1]);
+                        }
                         JavacTask task = (JavacTask)compiler.getTask(new StringWriter(),
-                            manager, diagnostics,
-                            Arrays.asList("-proc:none", "-implicit:none",
-                                "-sourcepath", root.toString()), null,
+                            manager, diagnostics, options, null,
                             Arrays.asList(new Source(file, source)));
                         Iterable<? extends CompilationUnitTree> units = task.parse();
                         try {
