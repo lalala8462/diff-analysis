@@ -193,7 +193,18 @@ def apply_group_feedback(run_dir, payload):
     destination.mkdir(exist_ok=True)
     _write_json(destination / ("groups-%03d.json" % revision), rev)
     _write_json(root / "review_state.json", state)
-    return {"revision": revision, "units": sum(len(x) for x in by_diff.values()),
+    # Derived analysis is isolated: even an unavailable method graph cannot
+    # roll back a valid, auditable grouping decision.
+    try:
+        from .incremental_review import recompute_review
+        recomputed = recompute_review(root)
+        recompute_error = None
+    except (ValueError, KeyError, OSError, TypeError) as exc:
+        recomputed = None
+        recompute_error = type(exc).__name__ + ": " + str(exc)[:300]
+    return {"recomputed": recomputed,
+            "recompute_error": recompute_error,
+            "revision": revision, "units": sum(len(x) for x in by_diff.values()),
             "created_groups": created_groups,
             "affected_questions": affected_qids,
             "decisions_needing_review": invalidated}
