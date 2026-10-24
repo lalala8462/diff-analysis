@@ -22,6 +22,7 @@ from .connection_bindings import correlate
 from .semantic_evidence import collect_semantic_evidence
 from .incremental_review import recompute_review
 from .protocol_discovery import discover
+from .java_classpath import load_classpaths, for_project
 
 
 def catalog_result(repo, sha, root, cache):
@@ -66,6 +67,8 @@ def parser():
         child.add_argument('--attribution-rules', default=None,
                            help='Exact-SHA Hunk attribution decisions JSON or per-project directory')
         child.add_argument('--db', default='.diff-analysis/state.sqlite3', help='SQLite run index (separate from baseline facts)')
+        child.add_argument('--java-classpath-manifest', default=None,
+                           help='Explicit jar SHA-256 manifest pinned per project side')
     interactive = sub.add_parser('wizard', help='Interactive multi-project Git revision comparison (CMD/PowerShell)')
     interactive.add_argument('--db', default='.diff-analysis/state.sqlite3')
     interactive.add_argument('--output', default='report.md')
@@ -74,6 +77,7 @@ def parser():
     interactive.add_argument('--refactoringminer-bin', default=None)
     interactive.add_argument('--codetracker-evidence', default=None)
     interactive.add_argument('--attribution-rules', default=None)
+    interactive.add_argument('--java-classpath-manifest', default=None)
     rebuild = sub.add_parser('rebuild-checkpoint',
                              help='Rebuild offline reports from a saved Git ledger (no JDK or Git reads)')
     rebuild.add_argument('--checkpoint', required=True, help='Path to ledger_checkpoint.json')
@@ -231,12 +235,27 @@ def run(args):
         bundle_root, manifest = start_ledger_checkpoint(specs, args.run_root, roles)
         usable = {(l['project'], l['base'], l['head'])
                   for l in manifest['ledgers']}
+        classpath_error = None
+        try:
+            java_classpaths = load_classpaths(
+                getattr(args, 'java_classpath_manifest', None))
+        except (ValueError, OSError) as exc:
+            java_classpaths = {}
+            classpath_error = str(exc)
         for i, (repo, project, base, head) in enumerate(specs):
             if (project, base, head) not in usable:
                 continue
             try:
-                result = review_repo(repo, project, base, head,
-                                     root / ('sources-%s' % i), cache)
+                if classpath_error:
+                    raise ScannerError("Classpath manifest invalid: " + classpath_error)
+                selected_cp = for_project(java_classpaths, project, base, head)
+                if not any(selected_cp.values()):
+                    result = review_repo(repo, project, base, head,
+                                         root / ('sources-%s' % i), cache)
+                else:
+                    result = review_repo(repo, project, base, head,
+                                         root / ('sources-%s' % i), cache,
+                                         classpaths=selected_cp)
             except (ScannerError, GitError, OSError, ValueError) as exc:
                 scan_failures.append({
                     'project': project, 'base': base, 'head': head,
