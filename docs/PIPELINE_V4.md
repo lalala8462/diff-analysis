@@ -371,9 +371,9 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 
 - **Java**：`JavaAstScanner` 调用 javac `analyze()` 做符号归属，`binding_id` 和 `target_binding_id` 都非空且唯一映射到扫描索引时才能建立 `RESOLVED_CODE_RELATION`；否则仍是候选或 unresolved。通过 `java-classpath-v1` 可为各项目 BASE/HEAD 配置不同的 SHA-256 校验本地 JAR；不运行编译/构建、注解处理器或业务代码，也不自动下载依赖。其解析并不覆盖动态行为。
 - **协议**：`protocol_discovery.py` 从固定 Git 版本只读提取 Dubbo/HTTP/MQ/数据库代码线索，不能直接构图连边；`connection_bindings.py` 校验两端精确协议身份、同侧版本、源码 blob/行号、可见标识和用户声明的环境/服务配置。输出是 `USER_ATTESTED_MATCH` 或 `BINDING_UNCONFIRMED`，不是运行时确认连接。真实链路必须使用实际部署配置与运行追踪另行验收。
-- **证据**：`semantic_evidence.py` 依据 `relations.graphs[].method_index` 提取单个完整方法；契约按固定 SHA 提取全文件，不接受自动猜测大型文件或不明方法。共享原补证轮次和字节预算；取证失败／过大单独记录。
+- **证据**：`semantic_evidence.py` 依据 `relations.graphs[].method_index` 提取单个完整方法；契约按固定 SHA 提取全文件；`auto_evidence.py` 从问题自动选取已索引方法和已知 API/DTO 契约，无法定位的对象登记遗漏，不接受自动猜测大型文件或不明方法。共享原补证轮次和字节预算，生成不覆盖原始清单的最新证据修订；取证失败／过大单独记录。
 - **人工修订**：`incremental_review.py` 以最后一次 ReviewUnit 归属为来源标签，复用 BASE／HEAD 关系边，对受影响组重新传播，缓存未受影响组，重新形成直接交叉候选、消费者与问题。BASE 子行无明示映射时留 `OLD_UNIT_RANGE_NOT_PROVEN`，不生成假证据。只重算静态受影响传播；不能据此声称完整 Java 语义、业务正确性或运行时依赖已核实。
-- 本轮新加 13 项单元用例；需补 JDK 8/17、GitLab、真实 Dubbo 2.6.x、Spring 动态绑定、多模块 classpath 与目标平台大规模样本验证。**当前 CI 尚未成功执行测试步骤。**
+- 本轮新加 15 项单元用例；需补 JDK 8/17、GitLab、真实 Dubbo 2.6.x、Spring 动态绑定、多模块 classpath 与目标平台大规模样本验证。**当前 CI 尚未成功执行测试步骤。**
 
 ## 10. 实施顺序与工具引入
 
