@@ -23,6 +23,10 @@ def collect_semantic_evidence(run_dir, request, repos,
         raise ValueError("Expected semantic-evidence-v1, 1..50 selectors")
     question_file = json.loads((root / "questions.json").read_text("utf-8"))
     valid_questions = {q["id"] for q in question_file["questions"]}
+    revised = root / "recomputed_latest.json"
+    if revised.is_file():
+        latest = json.loads(revised.read_text("utf-8"))
+        valid_questions.update(q["id"] for q in latest.get("questions", []))
     scope = {l["project"]: l for l in release["ledgers"]}
     graph = {(g["project"], g["side"], g["snapshot_sha"]): g
              for g in release.get("relations", {}).get("graphs", [])}
