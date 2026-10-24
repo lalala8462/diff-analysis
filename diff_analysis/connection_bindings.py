@@ -184,11 +184,57 @@ def correlate(run_dir, request, repos):
                                 ["BOTH_ENDPOINT_DEPLOYMENT_ATTESTATIONS"]),
                     "limitation": "Not runtime proof; verify actual deployed versions and configuration"
                 })
+    # A contract connection can be associated with a changed group only
+    # where versioned source ranges overlap. Never infer that every change in
+    # an owning project altered that interface or table.
+    by_endpoint = {x["id"]: x for x in verified}
+    change_owner = {
+        cid: group["id"] for group in release.get("groups", [])
+        for cid in group.get("change_ids", [])}
+    linked_changes, unlocated = [], []
+    for edge in edges:
+        endpoint = by_endpoint[edge["callee_endpoint"]]
+        evidence = endpoint["evidence"]
+        matched = set()
+        for ledger in release["ledgers"]:
+            if ledger["project"] != endpoint["project"]:
+                continue
+            for change in ledger["final_changes"]:
+                cid = change["id"]
+                field = "new_range" if edge["side"] == "HEAD" else "old_range"
+                location = change.get(field) or {}
+                path = change.get("path" if edge["side"] == "HEAD" else "old_path")
+                count, start = location.get("count", 0), location.get("start", 0)
+                if (cid not in change_owner or path != evidence["path"] or
+                        not isinstance(start, int) or
+                        not isinstance(count, int) or count < 1):
+                    continue
+                if (start <= evidence["end"] and
+                        start + count - 1 >= evidence["start"]):
+                    matched.add((change_owner[cid], cid))
+        for group_id, cid in sorted(matched):
+            linked_changes.append({
+                "id": "CI-" + _hash([edge["id"], group_id, cid])[:16],
+                "group_id": group_id, "change_id": cid,
+                "connection_id": edge["id"], "side": edge["side"],
+                "provider_project": edge["callee_project"],
+                "consumer_project": edge["caller_project"],
+                "consumer_endpoint": edge["caller_endpoint"],
+                "status": "REVIEW_REQUIRED",
+                "binding_status": edge["binding_status"],
+                "limitation": "Exact source overlap does not prove changed runtime behavior"})
+        if not matched:
+            unlocated.append({
+                "connection_id": edge["id"], "side": edge["side"],
+                "reason": "PROVIDER_CHANGE_NOT_LOCATED_AT_EVIDENCE_RANGE",
+                "limitation": "This does not rule out a related behavioral change"})
     result = {
         "schema_version": "connection-bindings-result-v1",
         "source_analysis_fingerprint": _hash([
             (x["project"], x["base"], x["head"]) for x in release["ledgers"]]),
         "created_at_utc": _utc(), "endpoints": verified, "edges": edges,
+        "cross_project_impact_candidates": linked_changes,
+        "impact_mapping_gaps": unlocated,
         "unresolved": unresolved,
         "coverage": {"endpoints": len(verified), "edges": len(edges),
                      "not_bound": sum(x["binding_status"] != "USER_ATTESTED_MATCH"
@@ -204,4 +250,5 @@ def correlate(run_dir, request, repos):
     _write_json(root / "bindings_latest.json", result)
     return {"revision": revision, "endpoints": len(verified),
             "edges": len(edges), "unresolved": len(unresolved),
+            "linked_change_candidates": len(linked_changes),
             "binding_status": "SOURCE_AND_ATTESTATION_ONLY"}
