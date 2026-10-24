@@ -15,6 +15,7 @@ from .catalog import CatalogStore, BaselineError, validate_project, validate_ver
 from .gitlab import get_mr, clone_mr
 from .gitops import check_sha, GitError
 from .scanner import ScannerError
+from .java_classpath import load_classpaths, for_project
 from .review import review_repo, stitch_cross_project
 from .report import markdown
 from .release_report import write_release_bundle, start_ledger_checkpoint
@@ -224,6 +225,13 @@ def run_wizard(args, input_fn=input, output_fn=print):
             bundle_root, checkpoint = start_ledger_checkpoint(specs, run_root, roles)
             usable = {(l["project"], l["base"], l["head"])
                       for l in checkpoint["ledgers"]}
+            try:
+                java_classpaths = load_classpaths(
+                    getattr(args, "java_classpath_manifest", None))
+                classpath_error = None
+            except (ValueError, OSError) as exc:
+                java_classpaths = {}
+                classpath_error = str(exc)
             for i, item, repo, base, head in usable_items:
                 project = item["project"]
                 if (project, base, head) not in usable:
@@ -250,8 +258,16 @@ def run_wizard(args, input_fn=input, output_fn=print):
                         "stage": "BASELINE", "error_type": type(exc).__name__,
                         "reason": str(exc)[:500]})
                 try:
-                    result = review_repo(repo, project, base, head,
-                                         root / ("source-%d" % i), cache)
+                    if classpath_error:
+                        raise ScannerError("Classpath manifest invalid: " + classpath_error)
+                    selected_cp = for_project(java_classpaths, project, base, head)
+                    if not any(selected_cp.values()):
+                        result = review_repo(repo, project, base, head,
+                                             root / ("source-%d" % i), cache)
+                    else:
+                        result = review_repo(repo, project, base, head,
+                                             root / ("source-%d" % i), cache,
+                                             classpaths=selected_cp)
                     results.append(result)
                 except (ScannerError, GitError, OSError, ValueError) as exc:
                     scan_failures.append({
