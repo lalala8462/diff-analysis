@@ -81,7 +81,15 @@ def side_graph(review, side, max_edges=100000):
                            "AST name/arity candidate, not complete Java resolution")
         })
     return {"project": project, "snapshot_sha": sha, "side": side,
-            "methods": sorted(methods), "edges": edges,
+            "methods": sorted(methods),
+            "method_index": {
+                symbol: {"path": m.get("path"), "start": m.get("start"),
+                         "end": m.get("end"),
+                         "class": m.get("class"), "name": m.get("name"),
+                         "signature": m.get("signature"),
+                         "binding_id": m.get("binding_id", "")}
+                for symbol, m in methods.items()},
+            "edges": edges,
             "unresolved_calls": unresolved,
             "coverage": {"calls": len(calls), "edges": len(edges),
                          "unresolved": len(unresolved),
