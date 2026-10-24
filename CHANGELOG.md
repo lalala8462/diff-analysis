@@ -1,5 +1,15 @@
 # 变更记录
 
+## 2026-10-24 09:10:44 +08:00 — Java 类型归属、跨系统版本绑定、完整证据与增量重算（未验收）
+
+- Java Scanner 从原有名称／参数数量启发式升级为 javac 符号归属：精确区分同参数数量重载、继承目标及不确定情况；补充按项目和 BASE／HEAD 固定 SHA 的本地 JAR SHA-256 类路径清单，不运行 Maven/Gradle。
+- 新增 `protocol_discovery.py` 和 `connection_bindings.py`：只读 Git 版本中的 Dubbo／HTTP／MQ／数据库线索；以完整协议标识、两端版本、证据 blob／范围、人工部署环境声明构造跨项目联系。绑定最多是 USER_ATTESTED_MATCH，不代表运行时事实。
+- 新增 `semantic_evidence.py`：按 AST 索引精确输出完整方法；契约、DTO、接口与配置可按固定 SHA 导出整份文件；重用补证字节与轮次预算。
+- 新增 `incremental_review.py`：对手工拆分／移动／合组后的 ReviewUnit 重新映射版本内方法，选择性重算来源传播并复用无关缓存；缺失旧版对应范围不作猜测。修订问题可重新导入判断。
+- CLI 补充 `discover-connections`、`bind-connections`、`semantic-evidence`、`recompute-review`、`--java-classpath-manifest`，文档与回归覆盖同步。
+- 新增 13 个专门测试用例，预计累积 90 个；**这些测试尚未执行成功**，没有真实 JDK 8／17、公司 Dubbo／MQ／数据库部署证据或关联项目的现场验收。PR 继续 Draft，不合并 main。
+
+
 本文件是项目唯一的日期时间变更记录，最新在前。后续按 `YYYY-MM-DD HH:mm:ss +08:00` 追加，不再创建按日期或版本拆分的架构、计划、设计记录文件。时间表示变更记录的修订标识，不等于软件发布、GitHub 推送或部署完成。
 
 ## 2026-10-23 17:45:14 +08:00 — P1/P2 基础评审批次闭环开发（等待集中验证）
