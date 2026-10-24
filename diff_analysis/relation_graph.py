@@ -82,6 +82,7 @@ def side_graph(review, side, max_edges=100000):
         })
     return {"project": project, "snapshot_sha": sha, "side": side,
             "methods": sorted(methods),
+            "classpath": review.get("java_classpath", {}).get(side, {"status": "SOURCE_ONLY"}),
             "method_index": {
                 symbol: {"path": m.get("path"), "start": m.get("start"),
                          "end": m.get("end"),
