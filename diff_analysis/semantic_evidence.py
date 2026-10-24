@@ -39,8 +39,8 @@ def collect_semantic_evidence(run_dir, request, repos,
             item.get("sha"), item.get("kind"))
         qid = item.get("question_id")
         spec = scope.get(project)
-        if qid not in valid_questions or side not in ("BASE", "HEAD") or
-                kind not in ("METHOD", "CONTRACT"):
+        if (qid not in valid_questions or side not in ("BASE", "HEAD") or
+                kind not in ("METHOD", "CONTRACT")):
             raise ValueError("Unknown question, side or evidence kind")
         if spec is None or sha != spec["base" if side == "BASE" else "head"]:
             actions.append({"status": "OUT_OF_SCOPE", "question_id": qid})
