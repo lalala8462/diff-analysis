@@ -34,10 +34,16 @@ def review_repo(repo, project, base, head, workdir, cache, classpaths=None):
     skipped_new = files_at(repo, head, new_root)
     classpaths = classpaths or {}
     old_cp, new_cp = classpaths.get("BASE"), classpaths.get("HEAD")
-    old, old_calls, old_errors = scan_tree(
-        old_root, cache, classpath=old_cp["classpath"] if old_cp else None)
-    new, calls, errors = scan_tree(
-        new_root, cache, classpath=new_cp["classpath"] if new_cp else None)
+    if old_cp and old_cp["classpath"]:
+        old, old_calls, old_errors = scan_tree(
+            old_root, cache, classpath=old_cp["classpath"])
+    else:
+        old, old_calls, old_errors = scan_tree(old_root, cache)
+    if new_cp and new_cp["classpath"]:
+        new, calls, errors = scan_tree(
+            new_root, cache, classpath=new_cp["classpath"])
+    else:
+        new, calls, errors = scan_tree(new_root, cache)
     hunks = {}
     for f in changed_files:
         if f['path'].endswith('.java'):
