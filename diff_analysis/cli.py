@@ -22,6 +22,7 @@ from .connection_bindings import correlate
 from .semantic_evidence import collect_semantic_evidence
 from .incremental_review import recompute_review
 from .protocol_discovery import discover
+from .auto_evidence import auto_evidence
 from .java_classpath import load_classpaths, for_project
 
 
@@ -112,6 +113,11 @@ def parser():
         job.add_argument('--file', required=True, help=schema + ' JSON input')
         job.add_argument('--repo', action='append', required=True,
                          help='Repeat PROJECT=LOCAL_GIT_REPO')
+    auto = sub.add_parser('auto-evidence',
+                          help='Auto-plan pinned full methods and API/DTO files for review questions')
+    auto.add_argument('--run-dir', required=True)
+    auto.add_argument('--repo', action='append', required=True,
+                      help='Repeat PROJECT=LOCAL_GIT_REPO')
     discovery = sub.add_parser('discover-connections',
                                help='Search pinned Git source for protocol evidence candidates')
     discovery.add_argument('--run-dir', required=True)
@@ -133,7 +139,7 @@ def run(args):
         print('Revision propagation:', json.dumps(outcome, ensure_ascii=False))
         return
     if args.command in ('bind-connections', 'semantic-evidence',
-                        'discover-connections'):
+                        'discover-connections', 'auto-evidence'):
         repos = {}
         for pair in args.repo:
             project, sep, path = pair.partition('=')
@@ -142,6 +148,8 @@ def run(args):
             repos[project] = path
         if args.command == 'discover-connections':
             outcome = discover(args.run_dir, repos)
+        elif args.command == 'auto-evidence':
+            outcome = auto_evidence(args.run_dir, repos)
         else:
             request = json.loads(Path(args.file).read_text(encoding='utf-8'))
             outcome = (correlate(args.run_dir, request, repos)
