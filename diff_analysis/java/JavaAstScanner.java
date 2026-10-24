@@ -226,6 +226,24 @@ public final class JavaAstScanner {
                         Trees trees = Trees.instance(task);
                         for (CompilationUnitTree unit : units)
                             new Scanner(unit, trees, task.getElements(), rel).scan(unit, null);
+                        int reported = 0;
+                        int omitted = 0;
+                        for (Diagnostic<? extends JavaFileObject> problem :
+                                diagnostics.getDiagnostics()) {
+                            if (problem.getKind() != Diagnostic.Kind.ERROR) continue;
+                            if (reported >= 20) { omitted++; continue; }
+                            String detail = problem.getMessage(Locale.ROOT);
+                            if (detail.length() > 300) detail = detail.substring(0, 300);
+                            emit("error", fields("path", rel,
+                                 "error", "JAVAC_ATTRIBUTION_INCOMPLETE: " + detail),
+                                 ints("line", (int)Math.max(0, problem.getLineNumber()),
+                                      "column", (int)Math.max(0, problem.getColumnNumber())));
+                            reported++;
+                        }
+                        if (omitted > 0)
+                            emit("error", fields("path", rel,
+                                 "error", "JAVAC_ATTRIBUTION_ERRORS_OMITTED"),
+                                 ints("omitted", omitted, "shown", reported));
                     } finally {
                         manager.close();
                     }
