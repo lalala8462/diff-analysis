@@ -21,6 +21,7 @@ from .review_feedback import (apply_group_feedback, import_basis_checks, review_
 from .connection_bindings import correlate
 from .semantic_evidence import collect_semantic_evidence
 from .incremental_review import recompute_review
+from .protocol_discovery import discover
 
 
 def catalog_result(repo, sha, root, cache):
@@ -107,6 +108,11 @@ def parser():
         job.add_argument('--file', required=True, help=schema + ' JSON input')
         job.add_argument('--repo', action='append', required=True,
                          help='Repeat PROJECT=LOCAL_GIT_REPO')
+    discovery = sub.add_parser('discover-connections',
+                               help='Search pinned Git source for protocol evidence candidates')
+    discovery.add_argument('--run-dir', required=True)
+    discovery.add_argument('--repo', action='append', required=True,
+                           help='Repeat PROJECT=LOCAL_GIT_REPO')
     recalc = sub.add_parser('recompute-review',
                              help='Recompute impacts after manual group revision')
     recalc.add_argument('--run-dir', required=True)
@@ -122,17 +128,21 @@ def run(args):
         outcome = recompute_review(args.run_dir)
         print('Revision propagation:', json.dumps(outcome, ensure_ascii=False))
         return
-    if args.command in ('bind-connections', 'semantic-evidence'):
+    if args.command in ('bind-connections', 'semantic-evidence',
+                        'discover-connections'):
         repos = {}
         for pair in args.repo:
             project, sep, path = pair.partition('=')
             if not sep or not project or not path or project in repos:
                 raise ValueError('Expected unique --repo PROJECT=LOCAL_GIT_REPO')
             repos[project] = path
-        request = json.loads(Path(args.file).read_text(encoding='utf-8'))
-        outcome = (correlate(args.run_dir, request, repos)
-                   if args.command == 'bind-connections' else
-                   collect_semantic_evidence(args.run_dir, request, repos))
+        if args.command == 'discover-connections':
+            outcome = discover(args.run_dir, repos)
+        else:
+            request = json.loads(Path(args.file).read_text(encoding='utf-8'))
+            outcome = (correlate(args.run_dir, request, repos)
+                       if args.command == 'bind-connections' else
+                       collect_semantic_evidence(args.run_dir, request, repos))
         print('Offline evidence:', json.dumps(outcome, ensure_ascii=False))
         return
     if args.command == 'revise-groups':
