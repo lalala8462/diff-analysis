@@ -25,15 +25,19 @@ def is_api_path(path):
     return p.endswith('api.java') or '/api/' in p
 
 
-def review_repo(repo, project, base, head, workdir, cache):
+def review_repo(repo, project, base, head, workdir, cache, classpaths=None):
     base = check_sha(repo, base)
     head = check_sha(repo, head)
     changed_files = diff_files(repo, base, head)
     old_root, new_root = Path(workdir) / 'base', Path(workdir) / 'head'
     skipped_old = files_at(repo, base, old_root)
     skipped_new = files_at(repo, head, new_root)
-    old, old_calls, old_errors = scan_tree(old_root, cache)
-    new, calls, errors = scan_tree(new_root, cache)
+    classpaths = classpaths or {}
+    old_cp, new_cp = classpaths.get("BASE"), classpaths.get("HEAD")
+    old, old_calls, old_errors = scan_tree(
+        old_root, cache, classpath=old_cp["classpath"] if old_cp else None)
+    new, calls, errors = scan_tree(
+        new_root, cache, classpath=new_cp["classpath"] if new_cp else None)
     hunks = {}
     for f in changed_files:
         if f['path'].endswith('.java'):
@@ -62,6 +66,10 @@ def review_repo(repo, project, base, head, workdir, cache):
         api_issues.append({'paths': [f['path'] for f in api_changes], 'status': status,
                            'old_version': old_v, 'new_version': new_v})
     return {'project': project, 'base': base, 'head': head,
+            'java_classpath': {
+                side: {'fingerprint': cp["fingerprint"],
+                       'jar_count': cp["jar_count"], 'status': cp["status"]}
+                for side, cp in classpaths.items() if cp},
             'changed_files': changed_files, 'changed_methods': sorted(changed),
             'methods': new, 'old_methods': old, 'calls': calls, 'old_calls': old_calls,
             'impact_paths': impact, 'old_impact_paths': old_impact,
