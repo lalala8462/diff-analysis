@@ -95,6 +95,7 @@ def recompute_review(run_dir):
     affected = set(revision["affected_group_ids"])
     reused, recomputed = 0, 0
     impacts, checks, consumers = [], [], []
+    impact_cache = {}
     for graph in release.get("relations", {}).get("graphs", []):
         key = (graph["project"], graph["side"], graph["snapshot_sha"])
         if key not in sources:
@@ -146,8 +147,6 @@ def recompute_review(run_dir):
                         "from_group": ga, "to_group": gb,
                         "binding_status": edge["binding"],
                         "status": "CHECK_TOGETHER"})
-        if "impact_cache" not in locals():
-            impact_cache = {}
         impact_cache["|".join(key)] = current_cache
     old_questions = json.loads((root / "questions.json").read_text("utf-8"))
     questions = [q for q in old_questions["questions"]
@@ -177,7 +176,7 @@ def recompute_review(run_dir):
         "affected_groups": sorted(affected),
         "impact_findings": impacts, "direct_group_checks": checks,
         "consumer_candidates": consumers, "questions": questions,
-        "impact_cache": impact_cache if "impact_cache" in locals() else {},
+        "impact_cache": impact_cache,
         "coverage_gaps": gaps,
         "recomputed_groups": recomputed, "reused_groups": reused,
         "invalidated_decision_ids": revision["decisions_needing_review"],
