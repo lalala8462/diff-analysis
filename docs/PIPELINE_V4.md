@@ -354,7 +354,7 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 
 分别测 Git／AST／关系／取证／渲染及工具外 AI 阅读耗时、峰值内存、缓存命中与预算触顶后的产物。首期不设无依据的准确率、耗时 SLA 或提效百分比；但确定性案例中的已知直接边、底账和显式遗漏披露必须符合预标注结果。
 
-### 当前开发实现状态（2026-10-23，尚未完成测试）
+### 当前开发实现状态（2026-10-24，尚未完成测试）
 
 | 阶段 | 已写入开发分支的内容 | 尚未完成或尚待专项验证 |
 | --- | --- | --- |
@@ -366,6 +366,14 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 | 持续验收 | 本地 Git 构造用例、失败／角色／图传播／补证与人工拆组／合组测试已编写 | Windows/JDK 8/17、真实 RefactoringMiner/GitLab、预标注误报率及 L 档压测未执行 |
 
 `analysis.json` 保留底账；`review_state.json` 和 `revisions/` 记录独立修订，不反向覆盖原 Git 事实。新增命令与输入示例以 [Windows 指南](WINDOWS_SETUP.md) 为准。
+
+### 后续专项实现（2026-10-24）
+
+- **Java**：`JavaAstScanner` 调用 javac `analyze()` 做符号归属，`binding_id` 和 `target_binding_id` 都非空且唯一映射到扫描索引时才能建立 `RESOLVED_CODE_RELATION`；否则仍是候选或 unresolved。通过 `java-classpath-v1` 可为各项目 BASE/HEAD 配置不同的 SHA-256 校验本地 JAR；不运行编译/构建、注解处理器或业务代码，也不自动下载依赖。其解析并不覆盖动态行为。
+- **协议**：`protocol_discovery.py` 从固定 Git 版本只读提取 Dubbo/HTTP/MQ/数据库代码线索，不能直接构图连边；`connection_bindings.py` 校验两端精确协议身份、同侧版本、源码 blob/行号、可见标识和用户声明的环境/服务配置。输出是 `USER_ATTESTED_MATCH` 或 `BINDING_UNCONFIRMED`，不是运行时确认连接。真实链路必须使用实际部署配置与运行追踪另行验收。
+- **证据**：`semantic_evidence.py` 依据 `relations.graphs[].method_index` 提取单个完整方法；契约按固定 SHA 提取全文件，不接受自动猜测大型文件或不明方法。共享原补证轮次和字节预算；取证失败／过大单独记录。
+- **人工修订**：`incremental_review.py` 以最后一次 ReviewUnit 归属为来源标签，复用 BASE／HEAD 关系边，对受影响组重新传播，缓存未受影响组，重新形成直接交叉候选、消费者与问题。BASE 子行无明示映射时留 `OLD_UNIT_RANGE_NOT_PROVEN`，不生成假证据。只重算静态受影响传播；不能据此声称完整 Java 语义、业务正确性或运行时依赖已核实。
+- 本轮新加 13 项单元用例；需补 JDK 8/17、GitLab、真实 Dubbo 2.6.x、Spring 动态绑定、多模块 classpath 与目标平台大规模样本验证。**当前 CI 尚未成功执行测试步骤。**
 
 ## 10. 实施顺序与工具引入
 
