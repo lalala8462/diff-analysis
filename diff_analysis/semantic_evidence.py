@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .gitops import git, check_sha, safe_source_path
 from .review_workflow import (load_batch, _load_supplement_state, _hash, _utc,
-                              _write_json)
+                              _write_json, refresh_evidence_manifest)
 
 MAX_FILE_SIZE = 1_000_000
 
@@ -147,5 +147,6 @@ def collect_semantic_evidence(run_dir, request, repos,
                               "MAX_ROUNDS" if state["rounds"] >= max_rounds else None)}
     state["requests"].append(result)
     _write_json(root / "supplement_state.json", state)
+    refresh_evidence_manifest(root, state)
     _write_json(folder / ("round-%03d.json" % state["rounds"]), result)
     return result
