@@ -316,6 +316,48 @@ def _load_supplement_state(root):
     return result
 
 
+def refresh_evidence_manifest(root, supplement_state):
+    """Rebuild a revisioned view without overwriting original export coverage.
+
+    Unknown discovery totals stay unknown; providing a whole file is not
+    proof that every required contract or consumer was discovered.
+    """
+    root = Path(root)
+    original = root / "evidence_manifest.json"
+    if not original.is_file():
+        return
+    manifest = json.loads(original.read_text(encoding="utf-8"))
+    known = {"METHOD", "CONTRACT", "CONSUMER", "RELATION",
+             "DIFF", "EXPECTED_GOAL", "AI_READING"}
+    summary = {}
+    for name in known | {"CODE_WINDOW"}:
+        base = manifest.get(name, {
+            "total_known": None, "provided_ids": [],
+            "partial_ids": [], "omitted_ids": [], "coverage": "NOT_VERIFIED"})
+        summary[name] = json.loads(json.dumps(base))
+        summary[name].setdefault("bytes_provided", 0)
+    for entry in supplement_state["evidence"]:
+        category = entry.get("kind")
+        if category not in ("METHOD", "CONTRACT"):
+            category = "CODE_WINDOW"
+        group = summary[category]
+        if entry["id"] not in group["provided_ids"]:
+            group["provided_ids"].append(entry["id"])
+            group["bytes_provided"] += entry.get("bytes", 0)
+        if group["coverage"] == "NOT_VERIFIED":
+            group["coverage"] = "SUPPLEMENTED_NOT_EXHAUSTIVE"
+    report = {"schema_version": "evidence-manifest-revision-v1",
+              "round": supplement_state["rounds"],
+              "categories": summary, "total_bytes_used": supplement_state["bytes_used"],
+              "actual_ai_reading_scope": "UNKNOWN",
+              "warning": "Exported evidence is not proof of actual AI reading or "
+                         "complete discovery of contracts, methods or consumers"}
+    directory = root / "supplements"
+    directory.mkdir(exist_ok=True)
+    _write_json(directory / ("manifest-%03d.json" % supplement_state["rounds"]), report)
+    _write_json(root / "evidence_manifest_latest.json", report)
+
+
 def supplement(run_dir, request, repos, max_total_bytes=1_000_000, max_rounds=3):
     """User-authorized pinned reads; no arbitrary paths outside Git objects.
 
@@ -424,5 +466,6 @@ def supplement(run_dir, request, repos, max_total_bytes=1_000_000, max_rounds=3)
                        "MAX_ROUNDS" if state["rounds"] >= max_rounds else None}
     state["requests"].append(outcome)
     _write_json(root / "supplement_state.json", state)
+    refresh_evidence_manifest(root, state)
     _write_json(store / ("round-%03d.json" % state["rounds"]), outcome)
     return outcome
