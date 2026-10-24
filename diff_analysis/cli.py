@@ -18,6 +18,9 @@ from .release_report import (write_release_bundle, start_ledger_checkpoint,
                              rebuild_from_checkpoint)
 from .review_workflow import supplement, import_review
 from .review_feedback import (apply_group_feedback, import_basis_checks, review_status)
+from .connection_bindings import correlate
+from .semantic_evidence import collect_semantic_evidence
+from .incremental_review import recompute_review
 
 
 def catalog_result(repo, sha, root, cache):
@@ -94,6 +97,19 @@ def parser():
     basis.add_argument('--file', required=True, help='basis-checks-v1 JSON')
     state = sub.add_parser('review-status', help='Show independent review status')
     state.add_argument('--run-dir', required=True)
+    for command, schema, help_text in (
+            ('bind-connections', 'connection-bindings-v1',
+             'Check source-backed Dubbo/HTTP/MQ/database endpoint identities'),
+            ('semantic-evidence', 'semantic-evidence-v1',
+             'Extract complete indexed methods or full contract files')):
+        job = sub.add_parser(command, help=help_text)
+        job.add_argument('--run-dir', required=True)
+        job.add_argument('--file', required=True, help=schema + ' JSON input')
+        job.add_argument('--repo', action='append', required=True,
+                         help='Repeat PROJECT=LOCAL_GIT_REPO')
+    recalc = sub.add_parser('recompute-review',
+                             help='Recompute impacts after manual group revision')
+    recalc.add_argument('--run-dir', required=True)
     baseline_cli.configure(sub)
     return p
 
@@ -101,6 +117,23 @@ def parser():
 def run(args):
     if args.command == 'wizard':
         wizard.run_wizard(args)
+        return
+    if args.command == 'recompute-review':
+        outcome = recompute_review(args.run_dir)
+        print('Revision propagation:', json.dumps(outcome, ensure_ascii=False))
+        return
+    if args.command in ('bind-connections', 'semantic-evidence'):
+        repos = {}
+        for pair in args.repo:
+            project, sep, path = pair.partition('=')
+            if not sep or not project or not path or project in repos:
+                raise ValueError('Expected unique --repo PROJECT=LOCAL_GIT_REPO')
+            repos[project] = path
+        request = json.loads(Path(args.file).read_text(encoding='utf-8'))
+        outcome = (correlate(args.run_dir, request, repos)
+                   if args.command == 'bind-connections' else
+                   collect_semantic_evidence(args.run_dir, request, repos))
+        print('Offline evidence:', json.dumps(outcome, ensure_ascii=False))
         return
     if args.command == 'revise-groups':
         outcome = apply_group_feedback(args.run_dir,
