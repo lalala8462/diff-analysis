@@ -51,7 +51,7 @@ public final class JavaAstScanner {
         Element parent = executable.getEnclosingElement();
         if (!(parent instanceof TypeElement)) return "";
         String owner = elements.getBinaryName((TypeElement)parent).toString();
-        if (owner.isEmpty()) return "";
+        if (owner.isEmpty() || parent.asType().getKind() == TypeKind.ERROR) return "";
         List<String> params = new ArrayList<String>();
         for (VariableElement param : executable.getParameters()) {
             TypeMirror type = param.asType();
