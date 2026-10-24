@@ -126,8 +126,11 @@ def build_graph(methods, calls):
     """Returns reverse graph; ambiguous names remain unresolved, not fabricated edges."""
     by_class_name = defaultdict(list)
     by_class_simple = defaultdict(list)
+    by_binding = defaultdict(list)
     by_name = defaultdict(list)
     for key, m in methods.items():
+        if m.get("binding_id"):
+            by_binding[m["binding_id"]].append(key)
         by_class_name[(m["class"], m["name"])].append(key)
         by_class_simple[(m["class"].split(".")[-1].split("$")[-1], m["name"])].append(key)
         by_name[m["name"]].append(key)
@@ -141,7 +144,10 @@ def build_graph(methods, calls):
         typ = call["receiver_type"]
         name = call["name"]
         arity = call["arity"]
-        if not recv or recv in ("this", "super"):
+        target = call.get("target_binding_id")
+        if target:
+            potentials = by_binding[target]
+        elif not recv or recv in ("this", "super"):
             potentials = by_class_name[(methods[owner]["class"], name)]
         elif typ:
             simple = re.sub(r"<.*", "", typ).split(".")[-1].split("$")[-1].strip()
@@ -155,7 +161,10 @@ def build_graph(methods, calls):
             unresolved.append({"owner": owner, "name": name, "receiver": recv,
                                "arity": arity, "receiver_type": typ,
                                "path": call["path"], "line": call["line"],
-                               "candidate_count": len(candidates)})
+                               "candidate_count": len(candidates),
+                               "reason": ("ATTRIBUTED_TARGET_NOT_INDEXED" if target and not candidates
+                                          else "AMBIGUOUS_CALL" if candidates else
+                                          "STATIC_TARGET_NOT_FOUND")})
     return reverse, unresolved
 
 
