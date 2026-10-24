@@ -106,12 +106,20 @@ def correlate(run_dir, request, repos):
             raise ValueError("Full protocol identity and environment must be explicit")
         project, side, sha, repo = _provenance(entry, scope, repos)
         evidence = _evidence_text(repo, sha, entry.get("evidence"))
+        anchor = {"DUBBO": ident["interface"].split(".")[-1],
+                  "HTTP": ident["path"], "MQ": ident["destination"],
+                  "DATABASE": ident["table"]}[kind]
+        if anchor not in evidence["excerpt"]:
+            raise ValueError("Protocol identity not visible in pinned source evidence")
         binding = entry.get("deployment_binding")
         # Declared scope is separate from the source facts. It remains an
         # attestation even with an exact source match.
         attested = bool(isinstance(binding, dict) and
                         isinstance(binding.get("author"), str) and
                         len(binding["author"].strip()) >= 2 and
+                        isinstance(binding.get("environment"), str) and
+                        bool(binding["environment"].strip()) and
+                        binding["environment"] not in ("UNKNOWN", "*") and
                         binding.get("environment") == ident.get(
                             "environment", binding.get("environment")) and
                         binding.get("service_id") == ident["service_id"] and
@@ -145,6 +153,13 @@ def correlate(run_dir, request, repos):
                 # Complete normalized contract and environment match; source
                 # is separately pinned on each endpoint. No cross-side mixing.
                 if a["identity"] != b["identity"]:
+                    continue
+                # The Dubbo registry may be shared by environments; the
+                # independently attested deployment scopes must match.
+                a_binding = a.get("deployment_binding") or {}
+                b_binding = b.get("deployment_binding") or {}
+                if (a_binding and b_binding and
+                        a_binding.get("environment") != b_binding.get("environment")):
                     continue
                 matched.append(b)
             if not matched:
