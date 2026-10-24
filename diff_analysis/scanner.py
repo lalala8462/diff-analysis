@@ -79,14 +79,17 @@ def compile_scanner(cache, toolchain=None):
     return cache
 
 
-def scan_tree(root, cache):
+def scan_tree(root, cache, classpath=None):
     toolchain = java_toolchain()
     cache = compile_scanner(cache, toolchain)
     _, java, tools = toolchain
     runtime_cp = str(cache) + (os.pathsep + str(tools) if tools else "")
+    scanner_argv = [java, "-Dfile.encoding=UTF-8", "-cp", runtime_cp,
+                    "JavaAstScanner", str(root)]
+    if classpath:
+        scanner_argv.append(classpath)
     p = subprocess.run(
-        [java, "-Dfile.encoding=UTF-8", "-cp", runtime_cp,
-         "JavaAstScanner", str(root)],
+        scanner_argv,
         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode:
         raise ScannerError("Java parser failed: " + p.stderr[:1500])
