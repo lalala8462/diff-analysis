@@ -1,6 +1,9 @@
 import com.sun.source.tree.*;
 import com.sun.source.util.*;
 import javax.tools.*;
+import javax.lang.model.element.*;
+import javax.lang.model.type.*;
+import javax.lang.model.util.Elements;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -43,6 +46,23 @@ public final class JavaAstScanner {
         return m;
     }
 
+    /** Canonical javac method identity; only attributed non-error types qualify. */
+    private static String bindingId(ExecutableElement executable, Elements elements) {
+        Element parent = executable.getEnclosingElement();
+        if (!(parent instanceof TypeElement)) return "";
+        String owner = elements.getBinaryName((TypeElement)parent).toString();
+        if (owner.isEmpty()) return "";
+        List<String> params = new ArrayList<String>();
+        for (VariableElement param : executable.getParameters()) {
+            TypeMirror type = param.asType();
+            if (type.getKind() == TypeKind.ERROR || type.getKind() == TypeKind.NONE
+                    || type.toString().contains("<error>")) return "";
+            params.add(type.toString());
+        }
+        return owner + "#" + executable.getSimpleName().toString()
+            + "(" + String.join(",", params) + ")";
+    }
+
     private static final class Source extends SimpleJavaFileObject {
         final String text;
         Source(Path file, String text) {
@@ -55,6 +75,8 @@ public final class JavaAstScanner {
     private static final class Scanner extends TreePathScanner<Void, Void> {
         final CompilationUnitTree unit;
         final SourcePositions positions;
+        final Trees trees;
+        final Elements elements;
         final String path;
         final String pkg;
         final Deque<String> classStack = new ArrayDeque<String>();
@@ -62,9 +84,11 @@ public final class JavaAstScanner {
         Map<String, String> localTypes = new HashMap<String, String>();
         String owner = null;
 
-        Scanner(CompilationUnitTree unit, Trees trees, String path) {
+        Scanner(CompilationUnitTree unit, Trees trees, Elements elements, String path) {
             this.unit = unit;
             this.positions = trees.getSourcePositions();
+            this.trees = trees;
+            this.elements = elements;
             this.path = path;
             this.pkg = unit.getPackageName() == null ? "" : unit.getPackageName().toString();
         }
@@ -114,6 +138,12 @@ public final class JavaAstScanner {
             Map<String, String> attrs = fields("path", path, "symbol", owner, "class", clazz(),
                 "name", tree.getName().toString(), "signature", signature.toString(),
                 "arity", String.valueOf(count));
+            Element methodElement = trees.getElement(getCurrentPath());
+            String methodBinding = methodElement instanceof ExecutableElement
+                ? bindingId((ExecutableElement)methodElement, elements) : "";
+            attrs.put("binding_id", methodBinding);
+            attrs.put("binding_status", methodBinding.isEmpty()
+                ? "ATTRIBUTION_UNAVAILABLE" : "JAVAC_ATTRIBUTED");
             emit("method", attrs, ints("start", line(start), "end", line(Math.max(start, end - 1))));
             super.visitMethod(tree, unused);
             owner = previousOwner;
@@ -140,10 +170,17 @@ public final class JavaAstScanner {
                 String type = receiver.equals("this") || receiver.equals("super") ? clazz() : localTypes.get(receiver);
                 if (type == null && receiver.length() > 0 && Character.isUpperCase(receiver.charAt(0)))
                     type = receiver;
-                emit("call", fields("path", path, "owner", owner, "name", name,
-                     "receiver", receiver, "receiver_type", type == null ? "" : type),
-                     ints("arity", tree.getArguments().size(), "line",
-                          line(positions.getStartPosition(unit, tree))));
+                Element resolved = trees.getElement(getCurrentPath());
+                String targetId = resolved instanceof ExecutableElement
+                    ? bindingId((ExecutableElement)resolved, elements) : "";
+                Map<String, String> attrs = fields(
+                    "path", path, "owner", owner, "name", name,
+                    "receiver", receiver, "receiver_type", type == null ? "" : type,
+                    "target_binding_id", targetId,
+                    "binding_status", targetId.isEmpty()
+                        ? "ATTRIBUTION_UNAVAILABLE" : "JAVAC_ATTRIBUTED");
+                emit("call", attrs, ints("arity", tree.getArguments().size(), "line",
+                                        line(positions.getStartPosition(unit, tree))));
             }
             return super.visitMethodInvocation(tree, unused);
         }
@@ -166,13 +203,24 @@ public final class JavaAstScanner {
                     StandardJavaFileManager manager = compiler.getStandardFileManager(
                         null, null, StandardCharsets.UTF_8);
                     try {
+                        DiagnosticCollector<JavaFileObject> diagnostics =
+                            new DiagnosticCollector<JavaFileObject>();
                         JavacTask task = (JavacTask)compiler.getTask(new StringWriter(),
-                            manager, null, Arrays.asList("-proc:none"), null,
+                            manager, diagnostics,
+                            Arrays.asList("-proc:none", "-implicit:none",
+                                "-sourcepath", root.toString()), null,
                             Arrays.asList(new Source(file, source)));
                         Iterable<? extends CompilationUnitTree> units = task.parse();
+                        try {
+                            // Symbol attribution only. No generate(), no project build,
+                            // no annotation processors or script execution.
+                            task.analyze();
+                        } catch (RuntimeException attributionFailure) {
+                            // Keep syntax-only evidence when external classpath is missing.
+                        }
                         Trees trees = Trees.instance(task);
                         for (CompilationUnitTree unit : units)
-                            new Scanner(unit, trees, rel).scan(unit, null);
+                            new Scanner(unit, trees, task.getElements(), rel).scan(unit, null);
                     } finally {
                         manager.close();
                     }
