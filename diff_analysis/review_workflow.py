@@ -198,8 +198,20 @@ def import_review(run_dir, payload):
         raise ValueError("Expected review-import-v1")
     state = _state(root)
     questions = json.loads((root / "questions.json").read_text("utf-8"))
+    current_scope_fingerprint = questions["scope_fingerprint"]
+    group_ids = {g["id"] for g in release["groups"]}
+    if state["group_revisions"]:
+        latest_group = state["group_revisions"][-1]
+        group_ids.update(g["id"] for g in latest_group.get("created_groups", []))
+        current_scope_fingerprint = _hash([
+            current_scope_fingerprint, latest_group["id"]])
+        derived = root / "recomputed_latest.json"
+        if derived.is_file():
+            extra = json.loads(derived.read_text("utf-8"))
+            if extra.get("revision") == latest_group["revision"]:
+                questions["questions"] = extra["questions"]
     valid = {"QUESTION": {q["id"] for q in questions["questions"]},
-             "GROUP": {g["id"] for g in release["groups"]},
+             "GROUP": group_ids,
              "DIFF": {c["id"] for l in release["ledgers"]
                       for c in l["final_changes"]}}
     ev_ids = valid["DIFF"] | {
@@ -277,7 +289,7 @@ def import_review(run_dir, payload):
         known_ids.add(did)
         planned_decisions.append({
             **item, "id": did, "created_at_utc": _utc(),
-            "scope_fingerprint": questions["scope_fingerprint"],
+            "scope_fingerprint": current_scope_fingerprint,
             "structural_check": "REFERENCES_VALID",
             "basis_check": "NOT_REVIEWED",
             "actor_identity_verified": False if actor == "AI" else None,
