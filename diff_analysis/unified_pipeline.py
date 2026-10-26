@@ -98,6 +98,11 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
             "consumer_node": item["consumer_node"], "side": item["side"],
             "sha": item["consumer_sha"], "path_edge_ids": item["path_edge_ids"],
             "confidence": item["confidence"], "status": "NEEDS_REVIEW",
+            "revision": 1,
+            "question": "跨项目消费者是否依赖该变化，当前固定版本是否兼容？",
+            "condition": "双方方法、契约、环境及版本绑定均需人工核实",
+            "human_status": "NOT_REVIEWED", "ai_status": "NOT_IMPORTED",
+            "binding_status": "UNCONFIRMED",
             "necessary_evidence": ["CONSUMER_METHOD", "CONTRACT", "BINDING"],
             "limitation": "Potential cross-project impact, not proven deployed behavior"})
     outcome = {
