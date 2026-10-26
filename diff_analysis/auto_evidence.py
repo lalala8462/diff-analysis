@@ -17,10 +17,12 @@ CONTRACT_SUFFIXES = ("Api.java", "DTO.java", "Dto.java", "VO.java",
 def auto_evidence(run_dir, repos):
     root, release = load_batch(run_dir)
     questions = json.loads((root / "questions.json").read_text("utf-8"))
+    latest = root / "review_package_latest.json"
     revised = root / "recomputed_latest.json"
-    if revised.is_file():
-        revision = json.loads(revised.read_text("utf-8"))
-        questions["questions"] = revision["questions"]
+    if latest.is_file():
+        questions["questions"] = json.loads(latest.read_text("utf-8"))["questions"]
+    elif revised.is_file():
+        questions["questions"] = json.loads(revised.read_text("utf-8"))["questions"]
     by_diff = {change["id"]: (ledger, change)
                for ledger in release["ledgers"]
                for change in ledger["final_changes"]}
@@ -29,7 +31,7 @@ def auto_evidence(run_dir, repos):
     selectors, omissions, seen = [], [], set()
 
     def register(qid, kind, project, sha, side, symbol=None, path=None):
-        key = (kind, project, sha, side, symbol if kind == "METHOD" else path)
+        key = (qid, kind, project, sha, side, symbol if kind == "METHOD" else path)
         if key in seen:
             return
         seen.add(key)
