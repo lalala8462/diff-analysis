@@ -34,26 +34,31 @@ def update_review_package(run_dir):
     unified = (json.loads(unified_file.read_text("utf-8"))
                if unified_file.is_file() else {})
     questions = list(questions) + unified.get("questions", [])
+    group_impact = defaultdict(list)
+    for hit in unified.get("findings", []):
+        group_impact[hit["group_id"]].append(
+            [hit["source_node"], hit["consumer_node"],
+             hit["confidence"], hit["path_edge_ids"]])
     diff_owner = _group_for_diff(release, state)
     changes = {c["id"]: (l, c) for l in release["ledgers"]
                for c in l["final_changes"]}
     superseded = {e["old_goal_id"] for e in state.get("goal_revision_events", [])}
     # Bind target changes to the exact review objects that cited them. An
     # unlinked new goal cannot invalidate every unrelated group.
-    affected = set()
+    goal_affected = set()
     for decision in state["decisions"]:
         if decision.get("expected_goal_id") not in superseded:
             continue
         if decision["object_type"] == "GROUP":
-            affected.add(decision["object_id"])
+            goal_affected.add(decision["object_id"])
         elif decision["object_type"] == "DIFF":
-            affected.update(diff_owner.get(decision["object_id"], []))
+            goal_affected.update(diff_owner.get(decision["object_id"], []))
         elif decision["object_type"] == "QUESTION":
             for q in original["questions"]:
                 if q["id"] == decision["object_id"]:
-                    affected.update(q.get("group_ids", []))
-    if state["group_revisions"]:
-        affected.update(state["group_revisions"][-1]["affected_group_ids"])
+                    goal_affected.update(q.get("group_ids", []))
+    group_affected = (set(state["group_revisions"][-1]["affected_group_ids"])
+                      if state["group_revisions"] else set())
     seen, dedup = set(), []
     for question in questions:
         if question["id"] not in seen:
@@ -76,13 +81,14 @@ def update_review_package(run_dir):
         related = q.get("group_ids", [])
         goal_refs = sorted((e["old_goal_id"], e["new_goal_id"]) for e in
                            state.get("goal_revision_events", [])
-                           if set(related) & affected)
+                           if set(related) & goal_affected)
         membership = sorted((g, tuple(sorted(groups.get(g, [])))) for g in related)
         fingerprint = _hash([q["id"], q.get("change_ids"), related, membership,
                              goal_refs, q.get("path_edge_ids", []),
-                             unified.get("graph_fingerprint", "")])
+                             sorted((g, group_impact[g]) for g in related)])
         last = old.get(q["id"])
-        unchanged = last and last.get("dependency_fingerprint") == fingerprint
+        unchanged = (last and last.get("dependency_fingerprint") == fingerprint and
+                     not set(related).intersection(group_affected))
         if unchanged:
             reused += 1
         else:
