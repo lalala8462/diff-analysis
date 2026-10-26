@@ -1,5 +1,6 @@
 """Derived unified impact outputs independent of immutable Git facts."""
 import json
+from collections import defaultdict, deque
 from pathlib import Path
 from .unified_graph import build_unified_graph, propagate_unified
 from .review_workflow import _write_json, _hash, load_batch, _state
@@ -8,6 +9,43 @@ from .review_workflow import _write_json, _hash, load_batch, _state
 def _bindings(root):
     path = Path(root) / "bindings_latest.json"
     return json.loads(path.read_text("utf-8")) if path.is_file() else None
+
+
+def _topology_affected(previous_graph, current_graph, sources, max_nodes=100000):
+    """Conservatively detect whose reverse-reachable call edges could change.
+
+    A changed caller -> callee link affects a source when its callee can be
+    reached from that source in either topology. If graph traversal is capped,
+    force recomputation instead of incorrectly reusing stale results.
+    """
+    if not previous_graph:
+        return set(sources)
+    before = {e["id"]: e for e in previous_graph.get("edges", [])}
+    after = {e["id"]: e for e in current_graph["edges"]}
+    changed_ids = {eid for eid in before.keys() | after.keys()
+                   if before.get(eid) != after.get(eid)}
+    if not changed_ids:
+        return set()
+    changed_callees = {e["callee"] for eid in changed_ids
+                       for e in (before.get(eid), after.get(eid)) if e}
+    reverse = defaultdict(set)
+    for edge in list(before.values()) + list(after.values()):
+        reverse[edge["callee"]].add(edge["caller"])
+    affected = set()
+    for group, starts in sources.items():
+        seen, queue = set(), deque(starts)
+        while queue and len(seen) < max_nodes:
+            node = queue.popleft()
+            if node in seen:
+                continue
+            seen.add(node)
+            if node in changed_callees:
+                affected.add(group)
+                break
+            queue.extend(reverse[node] - seen)
+        if queue and len(seen) >= max_nodes:
+            affected.add(group)
+    return affected
 
 
 def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
@@ -21,12 +59,17 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
             entry = state["group_revisions"][-1]
             units, revision = entry["units"], entry["revision"]
     graph = build_unified_graph(release, binding_report, units=units)
+    previous_graph_file = root / "unified_graph_latest.json"
+    previous_graph = (json.loads(previous_graph_file.read_text("utf-8"))
+                      if previous_graph_file.is_file() else None)
     previous_file = root / "unified_impact_latest.json"
     previous = (json.loads(previous_file.read_text("utf-8"))
                 if previous_file.is_file() else None)
     fingerprint = _hash(graph["edges"])
-    previous_cache = (previous.get("cache", {}) if previous and
-                      previous.get("edge_fingerprint") == fingerprint else {})
+    previous_cache = previous.get("cache", {}) if previous else {}
+    topology_changed_groups = _topology_affected(
+        previous_graph, graph, graph["sources"])
+    changed_groups = set(affected or []) | topology_changed_groups
     groups = set(graph["sources"])
     if previous_cache:
         groups.update(previous_cache)
@@ -35,7 +78,8 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
         source = graph["sources"].get(group, [])
         existing = previous_cache.get(group)
         if (existing and existing.get("sources") == source and
-                (affected is None or group not in affected)):
+                group not in changed_groups and
+                not existing.get("coverage", {}).get("truncated")):
             cache[group] = existing
             reused += 1
         elif source:
@@ -66,7 +110,7 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
         "reused_groups": reused, "recomputed_groups": computed,
         "coverage": {"truncated": any(c["coverage"]["truncated"] for c in cache.values()),
                      "omissions": len(graph["omissions"]),
-                     "affected_groups": sorted(affected or [])},
+                     "affected_groups": sorted(changed_groups)},
         "warning": "No cross-project edge is runtime verified"}
     _write_json(root / "unified_graph_latest.json", graph)
     _write_json(root / "unified_impact_latest.json", outcome)
