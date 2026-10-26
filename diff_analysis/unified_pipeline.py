@@ -117,7 +117,11 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
     if revision is not None:
         folder = root / "revisions"
         folder.mkdir(exist_ok=True)
-        _write_json(folder / ("unified-impact-%03d.json" % revision), outcome)
+        snapshot = _hash([
+            outcome["edge_fingerprint"], outcome["binding_fingerprint"],
+            graph["sources"], outcome["findings"]])[:12]
+        _write_json(folder / ("unified-impact-%03d-%s.json" %
+                               (revision, snapshot)), outcome)
     return {"edges": len(graph["edges"]), "findings": len(results),
             "cross_project_questions": len(questions),
             "reused_groups": reused, "recomputed_groups": computed,
