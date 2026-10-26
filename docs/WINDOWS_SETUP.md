@@ -368,6 +368,42 @@ Java 扫描现在优先采用 javac 本身的符号归属结果。当调用目�
 
 派生报告含受影响组、复用传播数量、直接跨组候选、消费者与覆盖缺口。拆分 Hunk 只有新版子行范围时，BASE 侧不能推出旧版一一对应范围。原 Git 底账和主 `analysis.json` 不会覆盖。
 
+## 4.3 统一影响追踪、定向字段证据与增量复核（JDK 8）
+
+所有环境只要求 **JDK 8**（确保 `java -version`、`javac -version` 均为 1.8，JAVA_HOME 指向 JDK 而非 JRE）。静态分析不会运行目标业务工程。
+
+先通过 `review-local`／`wizard` 取得固定 SHA 的 `analysis.json`，并通过 `bind-connections` 导入双端源码、协议身份和人工环境声明。新命令：
+
+```powershell
+# 显示当前固定版本的 Java + Dubbo/HTTP/MQ/数据库联合传播
+.\.venv\Scripts\python.exe -m diff_analysis rebuild-unified `
+  --run-dir ".\.diff-analysis\runs\<运行目录>"
+
+# 用差异中的字段名称追踪相关消费者 if/switch 分支、DTO 字段、
+# MyBatis XML 和 SQL 中的候选引用，仅在提供的固定版本仓库读取
+.\.venv\Scripts\python.exe -m diff_analysis contract-context `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" `
+  --repo "rhf/spms-back=D:\repos\spms-back" `
+  --repo "rhf/consumer=D:\repos\consumer"
+
+# 按最新问题，自动请求完整方法和候选契约文件
+.\.venv\Scripts\python.exe -m diff_analysis auto-evidence `
+  --run-dir ".\.diff-analysis\runs\<运行目录>" `
+  --repo "rhf/spms-back=D:\repos\spms-back" `
+  --repo "rhf/consumer=D:\repos\consumer"
+```
+
+产物：
+
+- `unified_graph_latest.json`：版本化节点／边，方法与协议端点分别标识；证据、绑定可信度与未映射项清晰保留。
+- `unified_impact_latest.json`：按组向上追踪的跨项目消费者路径与不确定性、增量重算和缓存命中情况。
+- `contract_context_latest.json`：具体变化标识在消费者判断分支、字段声明、XML/SQL 中的候选命中。
+- `review_package_latest.json`：当前审核问题、版本／修订指纹、必要证据计划及待重新验证的结论；历史保留于 `revisions/`。
+
+人工 `revise-groups` 后会自动更新统一关系影响和审核问题包；导入替代旧 ExpectedGoal 的人工目标时同样触发关联问题与证据计划更新。再次运行 `auto-evidence` 会按照最新问题取证，原始 `analysis.json`、已经保存的历史判断不会被覆盖。若方法/协议端点无法唯一关联，只显示缺口，不凭接口同名推断为真实依赖。
+
+以上关系追踪是静态源码证据与经人工声明的部署身份的组合，**仍非已部署链路验证或字段级数据流证明**。JDK 8 下的真实 Dubbo、MQ、MyBatis 工程样例仍需验收。
+
 ## 5. 不依赖 GitLab：先分析本地 Git 项目
 
 非交互入口需要一对**完整 Commit SHA**（40／64 位，按仓库对象格式；不是分支名或短 SHA）。先用 `rev-parse` 解析：
