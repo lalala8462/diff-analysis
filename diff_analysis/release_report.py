@@ -349,11 +349,29 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         release["unified_status"] = rebuild_unified(root)
         from .revision_pipeline import update_review_package
         release["review_package_status"] = update_review_package(root)
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        release["unified_status"] = {
-            "status": "PARTIAL", "reason": type(exc).__name__ + ": " + str(exc)[:250]}
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        failure = {"project": "(batch)", "stage": "UNIFIED_GRAPH",
+                   "error_type": type(exc).__name__,
+                   "reason": str(exc)[:250]}
+        release.setdefault("stage_failures", []).append(failure)
+        release["unified_status"] = {"status": "PARTIAL",
+                                     "reason": failure["reason"]}
+        if release["status"] != "FAILED_GIT_LEDGER":
+            release["status"] = "PARTIAL_EVIDENCE"
         (root / "unified_graph_error.json").write_text(
             json.dumps(release["unified_status"], ensure_ascii=False), encoding="utf-8")
+    # The derived stages run after initial analysis.json is saved for their
+    # readers. Persist the final status and failures before producing reports.
+    _write_json_atomic = root / "analysis.final.tmp"
+    _write_json_atomic.write_text(
+        json.dumps(release, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic.replace(root / "analysis.json")
+    if manifest is not None:
+        stage_manifest["failures"] = release.get("stage_failures", [])
+        stage_manifest["state"] = (
+            "FAILED" if release["status"] == "FAILED_GIT_LEDGER"
+            else "PARTIAL" if release["status"] == "PARTIAL_EVIDENCE"
+            else "COMPLETE")
 
     summary = [
         "# 版本代码差异与候选需求分组", "",
