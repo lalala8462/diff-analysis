@@ -142,11 +142,19 @@ def update_review_package(run_dir):
         if key not in seen_req:
             filtered.append(item)
             seen_req.add(key)
+    current_questions = {q["id"]: q for q in enriched}
     for decision in state["decisions"]:
-        if (decision["object_type"] == "QUESTION" and
-                decision["object_id"] in {q["id"] for q in enriched
-                                         if q["revision_status"] == "REVISED"}):
-            decision_stale.append(decision["id"])
+        if decision["object_type"] == "QUESTION":
+            current = current_questions.get(decision["object_id"])
+            stored = decision.get("question_dependency_fingerprint")
+            if current is None:
+                decision_stale.append(decision["id"])
+            elif stored is not None:
+                if stored != current["dependency_fingerprint"]:
+                    decision_stale.append(decision["id"])
+            elif current["revision_status"] == "REVISED":
+                # Legacy judgments lack per-question binding: conservative.
+                decision_stale.append(decision["id"])
         if decision.get("expected_goal_id") in superseded:
             decision_stale.append(decision["id"])
     result = {
