@@ -56,6 +56,11 @@ class LedgerCheckpointTests(unittest.TestCase):
             bundle = dirs[0]
             checkpoint = json.loads((bundle / "ledger_checkpoint.json").read_text("utf-8"))
             release = json.loads((bundle / "analysis.json").read_text("utf-8"))
+            # Derived graph stage runs after the initial JSON is created;
+            # its final status must be persisted back to that same artifact.
+            self.assertIn("unified_status", release)
+            self.assertEqual(release["status"],
+                             "PARTIAL_EVIDENCE")
             self.assertEqual("SAVED", checkpoint["state"])
             self.assertEqual(1, len(checkpoint["ledgers"]))
             change_id = checkpoint["ledgers"][0]["final_changes"][0]["id"]
