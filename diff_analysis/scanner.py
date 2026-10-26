@@ -41,20 +41,20 @@ def java_toolchain():
         p = subprocess.run([javac, "-version"], capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
     except OSError as exc:
-        raise ScannerError("Cannot run javac; install JDK 17 and verify JAVA_HOME/PATH") from exc
+        raise ScannerError("Cannot run javac; install a full JDK 8 and verify JAVA_HOME/PATH") from exc
     version = (p.stdout + " " + p.stderr).strip()
     match = re.search(r"\bjavac\s+(\d+)(?:\.(\d+))?", version)
     if p.returncode or not match:
         raise ScannerError("Unable to identify javac version: " + version[:200])
     major = int(match.group(2)) if match.group(1) == "1" else int(match.group(1))
     if major < 8:
-        raise ScannerError("Java 8+ is required; JDK 17 is recommended")
+        raise ScannerError("Java 8+ is required; JDK 8 is the supported target")
     tools = _tools_jar(javac) if major == 8 else None
     if major == 8 and tools is None:
         raise ScannerError(
             "JDK 8 javac detected, but lib/tools.jar was not found. "
             "Set JAVA_HOME to the full JDK 8 installation (not a JRE), "
-            "or install/use JDK 17 and put its bin directory first on PATH.")
+            "or repair JAVA_HOME to point to an installed full JDK 8.")
     return javac, java, tools
 
 
@@ -75,7 +75,7 @@ def compile_scanner(cache, toolchain=None):
         if p.returncode:
             raise ScannerError(
                 "JDK javac compilation failed (" + str(javac) + "): " +
-                p.stderr[:1400] + "\nTry JDK 17; run java -version and javac -version.")
+                p.stderr[:1400] + "\nVerify full JDK 8/tools.jar, java -version and javac -version.")
     return cache
 
 
