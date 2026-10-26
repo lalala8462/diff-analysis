@@ -294,8 +294,12 @@ def import_review(run_dir, payload):
         did = "DEC-" + _hash([oid, actor, dim, len(state["decisions"]) +
                                       len(planned_decisions), _utc()])[:16]
         known_ids.add(did)
+        question_fingerprint = next((
+            q.get("dependency_fingerprint") for q in questions["questions"]
+            if obj == "QUESTION" and q["id"] == oid), None)
         planned_decisions.append({
             **item, "id": did, "created_at_utc": _utc(),
+            "question_dependency_fingerprint": question_fingerprint,
             "scope_fingerprint": current_scope_fingerprint,
             "structural_check": "REFERENCES_VALID",
             "basis_check": "NOT_REVIEWED",
@@ -383,6 +387,11 @@ def supplement(run_dir, request, repos, max_total_bytes=1_000_000, max_rounds=3)
         raise ValueError("Invalid evidence-requests-v1 selectors (1..50)")
     known_questions = {q["id"] for q in json.loads(
         (root / "questions.json").read_text("utf-8"))["questions"]}
+    for filename in ("recomputed_latest.json", "review_package_latest.json"):
+        current_path = root / filename
+        if current_path.is_file():
+            content = json.loads(current_path.read_text(encoding="utf-8"))
+            known_questions.update(q["id"] for q in content.get("questions", []))
     scope = {l["project"]: l for l in release["ledgers"]}
     state = _load_supplement_state(root)
     if state["rounds"] >= max_rounds:
