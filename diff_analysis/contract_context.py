@@ -171,6 +171,82 @@ def discover_contract_context(run_dir, repos):
                 break
         if len(facts) >= MAX_CONTEXTS:
             break
+    # Contract declarations often live outside Java methods (DTO fields,
+    # enums and MyBatis XML/SQL). Only inspect files already in the final
+    # changed-file inventory at pinned SHAs, never the entire source tree.
+    declaration_pattern = re.compile(r"<(?:result|id|association|collection)\\b", re.I)
+    for group, entries in sorted(groups.items()):
+        if len(facts) >= MAX_CONTEXTS:
+            break
+        for change, ledger in entries:
+            if len(facts) >= MAX_CONTEXTS:
+                break
+            for side, sha, path_key in (
+                    ("BASE", ledger["base"], "old_path"),
+                    ("HEAD", ledger["head"], "path")):
+                path = change.get(path_key)
+                if (not isinstance(path, str) or not safe_source_path(path) or
+                        Path(path).suffix.lower() not in (".java", ".xml", ".sql")):
+                    continue
+                terms = _tokens(change, side)
+                if not terms:
+                    continue
+                project = ledger["project"]
+                if project not in repo_roots:
+                    omissions.append({"group_id": group, "project": project,
+                                      "reason": "CONTRACT_REPO_NOT_SUPPLIED"})
+                    continue
+                repo = repo_roots[project]
+                key = (project, sha, path)
+                if key not in cached:
+                    if check_sha(repo, sha) != sha:
+                        omissions.append({"path": path, "reason": "CONTRACT_SHA_MISMATCH"})
+                        continue
+                    try:
+                        size = int(git(repo, "cat-file", "-s", sha + ":" + path)
+                                   .decode("ascii").strip())
+                        if size > 1_000_000 or size + byte_count > MAX_BYTES:
+                            omissions.append({"path": path, "reason": "CONTRACT_BUDGET"})
+                            continue
+                        data = git(repo, "show", sha + ":" + path)
+                    except RuntimeError:
+                        omissions.append({"path": path, "side": side,
+                                          "reason": "CONTRACT_NOT_FOUND"})
+                        continue
+                    if b"\\x00" in data:
+                        omissions.append({"path": path, "reason": "NON_TEXT_CONTRACT"})
+                        continue
+                    byte_count += len(data)
+                    cached[key] = data.decode("utf-8", "replace").splitlines()
+                for index, line in enumerate(cached.get(key, [])):
+                    overlap = [t for t in terms if re.search(
+                        r"(?<![A-Za-z0-9_$])" + re.escape(t) +
+                        r"(?![A-Za-z0-9_$])", line)]
+                    if not overlap:
+                        continue
+                    if path.endswith(".java") and FIELD.search(line):
+                        kind = "CONTRACT_FIELD_DECLARATION"
+                    elif path.endswith(".java") and ENUM.search(line) and (
+                            re.search(r"\\benum\\b", "\\n".join(cached[key][:index+1]))):
+                        kind = "ENUM_DECLARATION_CANDIDATE"
+                    elif path.endswith(".xml") and declaration_pattern.search(line):
+                        kind = "MYBATIS_MAPPING_CANDIDATE"
+                    elif path.endswith((".xml", ".sql")) and SQL.search(line):
+                        kind = "SQL_FIELD_REFERENCE"
+                    else:
+                        continue
+                    facts.append({
+                        "id": "CF-" + _hash([group, project, sha, path, index + 1,
+                                            kind, overlap])[:16],
+                        "group_id": group, "project": project,
+                        "side": side, "sha": sha,
+                        "path": path, "line": index + 1, "kind": kind,
+                        "identifiers": overlap, "status": "LEXICAL_CANDIDATE",
+                        "limitation": "Contract declaration location is grounded in Git; "
+                                      "field/schema binding is not type-checked"})
+                    if len(facts) >= MAX_CONTEXTS:
+                        omissions.append({"reason": "CONTEXT_LIMIT", "max": MAX_CONTEXTS})
+                        break
     result = {"schema_version": "contract-context-v1",
               "facts": facts, "omissions": omissions,
               "coverage": {"facts": len(facts), "bytes_read": byte_count,
