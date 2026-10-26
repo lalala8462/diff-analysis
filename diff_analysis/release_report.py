@@ -342,6 +342,16 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         temp.replace(path)
     (root / "analysis.json").write_text(
         json.dumps(release, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Produce an initial Java-only unified graph even before an explicit
+    # cross-project binding is supplied. Later binding imports enrich it.
+    try:
+        from .unified_pipeline import rebuild_unified
+        release["unified_status"] = rebuild_unified(root)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        release["unified_status"] = {
+            "status": "PARTIAL", "reason": type(exc).__name__ + ": " + str(exc)[:250]}
+        (root / "unified_graph_error.json").write_text(
+            json.dumps(release["unified_status"], ensure_ascii=False), encoding="utf-8")
 
     summary = [
         "# 版本代码差异与候选需求分组", "",
