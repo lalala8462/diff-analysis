@@ -98,6 +98,13 @@ def auto_evidence(run_dir, repos):
         for group in question.get("group_ids", []):
             questions_by_group.setdefault(group, []).append(question["id"])
     for hit in ctx["facts"]:
+        if hit["kind"] in ("CONTRACT_FIELD_DECLARATION",
+                           "ENUM_DECLARATION_CANDIDATE",
+                           "MYBATIS_MAPPING_CANDIDATE", "SQL_FIELD_REFERENCE"):
+            for qid in questions_by_group.get(hit["group_id"], []):
+                register(qid, "CONTRACT", hit["project"], hit["sha"],
+                         hit["side"], path=hit["path"])
+            continue
         if hit["kind"] not in ("DECISION_BRANCH", "FIELD_DECLARATION",
                                "SQL_REFERENCE", "ENUM_OR_CONSTANT_USE"):
             continue
