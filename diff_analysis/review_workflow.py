@@ -300,9 +300,14 @@ def import_review(run_dir, payload):
     state.setdefault("goal_revision_events", []).extend(goal_events)
     state["decisions"].extend(planned_decisions)
     _write_json(root / "review_state.json", state)
+    package = None
+    if goal_events:
+        from .revision_pipeline import update_review_package
+        package = update_review_package(root)
     return {"goals_added": len(planned_goals),
             "rules_added": len(planned_rules),
-            "decisions_added": len(planned_decisions)}
+            "decisions_added": len(planned_decisions),
+            "review_package": package}
 
 
 def _load_supplement_state(root):
