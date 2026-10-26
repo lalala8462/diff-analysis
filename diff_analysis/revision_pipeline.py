@@ -163,8 +163,10 @@ def update_review_package(run_dir):
                    "support new questions or superseding expected goals"}
     folder = root / "revisions"
     folder.mkdir(exist_ok=True)
-    version = "review-%03d-%03d.json" % (
-        result["group_revision"] or 0, result["goal_revision_count"])
+    snapshot = _hash([result["questions"], result["evidence_plan"],
+                      result["decisions_to_revalidate"]])[:12]
+    version = "review-%03d-%03d-%s.json" % (
+        result["group_revision"] or 0, result["goal_revision_count"], snapshot)
     _write_json(folder / version, result)
     _write_json(root / "review_package_latest.json", result)
     return {"questions": len(enriched), "questions_reused": reused,
