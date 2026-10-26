@@ -98,18 +98,17 @@ class ContractContextTests(unittest.TestCase):
             git(repo, "config", "user.email", "test@example.com")
             files = {
                 "PayResponse.java": (
-                    "class PayResponse {\\n"
-                    " private String transactionState;\\n"
-                    "}\\n"),
+                    "class PayResponse {\n"
+                    " private String transactionState;\n"
+                    "}\n"),
                 "PaymentMapper.xml": (
-                    "<mapper>\\n"
-                    " <result column=\\"trans_state\\" property=\\"transactionState\\"/>\\n"
-                    "</mapper>\\n"),
-                "payment.sql": "SELECT transactionState FROM trans_record;\\n"
+                    "<mapper>\n"
+                    " <result column=\"trans_state\" property=\"transactionState\"/>\n"
+                    "</mapper>\n"),
+                "payment.sql": "SELECT transactionState FROM trans_record;\n"
             }
             for path, content in files.items():
-                (repo / path).write_text(content.replace("\\\\n", "\\n"),
-                                         encoding="utf-8")
+                (repo / path).write_text(content, encoding="utf-8")
             git(repo, "add", ".")
             git(repo, "commit", "-qm", "contract")
             sha = git(repo, "rev-parse", "HEAD")
@@ -136,7 +135,7 @@ class ContractContextTests(unittest.TestCase):
             summary = discover_contract_context(root, {"contracts": repo})
             self.assertGreaterEqual(summary["facts"], 4)
             facts = json.loads((root / "contract_context_latest.json").read_text("utf-8"))["facts"]
-            types = {f["kind"] for f in facts}
+            types = {fact["kind"] for fact in facts}
             self.assertIn("CONTRACT_FIELD_DECLARATION", types)
             self.assertIn("MYBATIS_MAPPING_CANDIDATE", types)
             self.assertIn("SQL_FIELD_REFERENCE", types)
