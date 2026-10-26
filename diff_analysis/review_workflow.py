@@ -146,7 +146,7 @@ def export_questions(root, release):
     root = Path(root)
     _write_json(root / "questions.json", output)
     _write_json(root / "evidence_manifest.json", output["evidence_manifest"])
-    index = {c["id"]: c for ledger in release["ledgers"]
+    index = {c["id"]: (c, ledger) for ledger in release["ledgers"]
              for c in ledger["final_changes"]}
     lines = ["# 问题驱动评审（待人工／工具外 AI 核实）", "",
              "这些问题由静态关联与候选组生成，不是缺陷结论。", ""]
@@ -158,12 +158,14 @@ def export_questions(root, release):
                   "成立条件：" + q["condition"],
                   "必要证据：" + ", ".join(q["necessary_evidence"]), ""]
         for cid in q["change_ids"]:
-            change = index.get(cid)
+            item = index.get(cid)
             lines += ["- 变化证据：" + "evidence/" + cid + ".md"]
-            if not change:
+            if item is None:
                 continue
-            lines += ["  固定版本：" + change["base_sha"] + " → " +
-                      change["head_sha"], "  文件：" + change["path"]]
+            change, ledger = item
+            lines += ["  固定版本：" + str(change.get("base_sha") or ledger["base"]) +
+                      " → " + str(change.get("head_sha") or ledger["head"]),
+                      "  文件：" + str(change.get("path") or "(路径未记录)")]
             for side, title in (("before", "旧版"), ("after", "新版")):
                 excerpt = change.get(side, [])
                 lines += ["  " + title + "变化窗口：", "~~~text"]
