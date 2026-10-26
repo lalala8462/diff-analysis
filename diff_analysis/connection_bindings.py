@@ -248,7 +248,12 @@ def correlate(run_dir, request, repos):
     revision = len(previous) + 1
     _write_json(folder / ("bindings-%03d.json" % revision), result)
     _write_json(root / "bindings_latest.json", result)
-    return {"revision": revision, "endpoints": len(verified),
+    # Binding is a separate revision. Rebuild only derived graph/impact;
+    # immutable code and Git ledgers are never mutated.
+    from .unified_pipeline import rebuild_unified
+    unified = rebuild_unified(root, binding_report=result)
+    return {"unified": unified,
+            "revision": revision, "endpoints": len(verified),
             "edges": len(edges), "unresolved": len(unresolved),
             "linked_change_candidates": len(linked_changes),
             "binding_status": "SOURCE_AND_ATTESTATION_ONLY"}
