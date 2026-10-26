@@ -10,7 +10,7 @@ def method(name):
 
 
 def call(owner, callee, line):
-    return {"owner": owner, "name": callee, "receiver": "this",
+    return {"owner": owner, "name": callee.split("#")[-1].split("(")[0], "receiver": "this",
             "receiver_type": "com.demo.Pay", "arity": 0,
             "path": "Pay.java", "line": line}
 

@@ -106,9 +106,11 @@ def correlate(run_dir, request, repos):
             raise ValueError("Full protocol identity and environment must be explicit")
         project, side, sha, repo = _provenance(entry, scope, repos)
         evidence = _evidence_text(repo, sha, entry.get("evidence"))
-        anchor = {"DUBBO": ident["interface"].split(".")[-1],
-                  "HTTP": ident["path"], "MQ": ident["destination"],
-                  "DATABASE": ident["table"]}[kind]
+        anchor_key = {"DUBBO": "interface", "HTTP": "path",
+                      "MQ": "destination", "DATABASE": "table"}[kind]
+        anchor = ident[anchor_key]
+        if kind == "DUBBO":
+            anchor = anchor.split(".")[-1]
         if anchor not in evidence["excerpt"]:
             raise ValueError("Protocol identity not visible in pinned source evidence")
         binding = entry.get("deployment_binding")

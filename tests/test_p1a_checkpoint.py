@@ -107,6 +107,9 @@ class LedgerCheckpointTests(unittest.TestCase):
             phases = [r["stage"] for r in release["stage_failures"]]
             self.assertIn("PREPARE", phases)
             self.assertIn("STATIC_SCAN", phases)
+            self.assertTrue((dirs[0] / "report.md").is_file())
+            stages = json.loads((dirs[0] / "stage_manifest.json").read_text("utf-8"))
+            self.assertEqual("COMPLETE", stages["report_stage"]["status"])
 
 
     def test_bad_project_does_not_erase_successful_project(self):

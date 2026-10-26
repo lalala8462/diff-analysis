@@ -29,6 +29,9 @@ def safe_source_path(path, windows=None):
 
 
 def git(repo, *args, env=None):
+    # 只读差异与历史查询也必须禁用仓库配置的外部转换器。
+    if args and args[0] in ("diff", "log", "show", "blame"):
+        args = (args[0], "--no-ext-diff", "--no-textconv", *args[1:])
     p = subprocess.run(["git", "-C", str(repo), "--no-pager", *args],
                        capture_output=True, env=env, check=False)
     if p.returncode:

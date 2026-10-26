@@ -3,9 +3,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from diff_analysis.review_feedback import apply_group_feedback
-from diff_analysis.review_workflow import export_questions, _hash
+from diff_analysis.review_workflow import export_questions, import_review, _hash, _write_json
+from diff_analysis.review_feedback import review_status
 
 SA, SB, SC = "pkg.Pay#a()", "pkg.Pay#b()", "pkg.Pay#c()"
 G1, G2, G3 = "G-aaaaaaaaaaaaaaaa", "G-bbbbbbbbbbbbbbbb", "G-cccccccccccccccc"
@@ -92,9 +94,54 @@ class IncrementalReviewTests(unittest.TestCase):
             self.assertTrue(any(g["status"] == "OLD_UNIT_RANGE_NOT_PROVEN"
                                 for g in derived["coverage_gaps"]))
             self.assertTrue(any(x["source_group"] == G2 and x["side"] == "HEAD"
+                                and x["source_symbol"] == SB
                                 for x in derived["impact_findings"]))
             self.assertFalse(any(x["source_group"] == G2 and x["side"] == "BASE"
+                                 and x["source_symbol"] == SB
                                  for x in derived["impact_findings"]))
+            self.assertTrue(any(x["source_group"] == G2 and x["side"] == "BASE"
+                                and x["source_symbol"] == SA
+                                for x in derived["impact_findings"]))
+
+    def test_unrelated_second_revision_preserves_manual_group_question(self):
+        for missing_prior in (False, True):
+            with self.subTest(missing_prior=missing_prior), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                original = self._save(root)
+
+                def save(path, data):
+                    if missing_prior and path.name == "recomputed-001.json":
+                        return
+                    _write_json(path, data)
+
+                with patch("diff_analysis.incremental_review._write_json", side_effect=save):
+                    first = apply_group_feedback(root, {
+                        "schema_version": "group-feedback-v1", "actions": [{
+                            "action": "SPLIT_GROUP", "source_group_id": G1,
+                            "diff_ids": [D1], "new_group_label": "独立人工需求",
+                            "actor": "reviewer", "reason": "根据业务证据拆分需求"}]})
+                self.assertIsNone(first["recompute_error"])
+                manual = first["created_groups"][0]["id"]
+                before = json.loads((root / "review_package_latest.json").read_text("utf-8"))
+                question = next(q for q in before["questions"] if manual in q["group_ids"])
+                import_review(root, {"schema_version": "review-import-v1", "decisions": [{
+                    "object_type": "QUESTION", "object_id": question["id"],
+                    "dimension": "IMPACT", "actor_kind": "HUMAN", "actor_id": "reviewer",
+                    "verdict": "SUPPORT", "reason": "已核对人工组对应变化与消费者",
+                    "evidence_ids": [D1]}]})
+                second = apply_group_feedback(root, {
+                    "schema_version": "group-feedback-v1", "actions": [{
+                        "action": "MOVE_UNIT", "unit_id": "U-" + _hash([D2, "whole"])[:16],
+                        "target_group_id": G3, "actor": "reviewer", "reason": "修正另一组的需求归属"}]})
+                self.assertIsNone(second["recompute_error"])
+                after = json.loads((root / "review_package_latest.json").read_text("utf-8"))
+                retained = next(q for q in after["questions"] if manual in q["group_ids"])
+                self.assertEqual([D1], retained["change_ids"])
+                self.assertFalse(any(G1 in q["group_ids"] for q in after["questions"]))
+                if not missing_prior:
+                    self.assertEqual(question["id"], retained["id"])
+                    self.assertEqual("CURRENT", review_status(root)["current_latest"][0]["current_applicability"])
+                self.assertEqual(original, json.loads((root / "analysis.json").read_text("utf-8")))
 
 
 if __name__ == "__main__":

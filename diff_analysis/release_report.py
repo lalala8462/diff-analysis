@@ -263,7 +263,7 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     if manifest is not None:
         keys = {(r["project"], r["base"], r["head"]): r for r in reviews}
         failures = {(r["project"], r["base"], r["head"]): r
-                    for r in scan_failures}
+                    for r in scan_failures if "base" in r and "head" in r}
         release["project_phase_status"] = []
         for row in manifest["projects"]:
             key = (row["project"], row["base"], row["head"])

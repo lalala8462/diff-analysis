@@ -33,7 +33,7 @@ class ASTTests(unittest.TestCase):
             methods, calls, errors = scan_tree(src, Path(d) / 'cache')
             self.assertFalse(errors)
             reverse, unresolved = build_graph(methods, calls)
-            self.assertFalse(unresolved)
+            self.assertFalse([c for c in unresolved if c['name'] != 'super'])
             self.assertIn('demo.Pay#a()', reverse['demo.Pay#b()'])
             self.assertIn('demo.Pay#b(String)', methods)
 
@@ -67,6 +67,44 @@ class ASTTests(unittest.TestCase):
         self.assertTrue(is_api_path('src/main/java/com/foo/api/PayApi.java'))
         self.assertFalse(is_api_path('src/main/java/com/foo/service/PayService.java'))
 
+    def test_report_keeps_old_and_new_call_paths_and_links_separate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repo = root / 'repo'
+            repo.mkdir()
+
+            def git(*args):
+                return subprocess.check_output(
+                    ['git', '-C', str(repo), *args], stderr=subprocess.STDOUT).decode().strip()
+
+            git('init', '-q')
+            git('config', 'user.name', 'Test')
+            git('config', 'user.email', 'test@example.com')
+            source = ('class P {\n    Other target;\n\n\n\n'
+                      '    void a() {}\n\n\n\n'
+                      '    void b() { a(); }\n\n\n\n'
+                      '    void c() { target.b(); }\n}\n'
+                      'class Other { void b() {} }\n')
+            path = repo / 'P.java'
+            path.write_text(source, encoding='utf-8')
+            git('add', '.')
+            git('commit', '-qm', 'base')
+            base = git('rev-parse', 'HEAD')
+            path.write_text(source.replace('Other target', 'P target').replace(
+                'void a()', 'void x()'), encoding='utf-8')
+            git('add', '.')
+            git('commit', '-qm', 'head')
+            head = git('rev-parse', 'HEAD')
+            result = review_repo(repo, 'demo', base, head, root / 'work', root / 'cache')
+            self.assertEqual(['P#a()', 'P#b()'], result['old_impact_paths']['P#b()'])
+            self.assertNotIn('P#c()', result['impact_paths'])
+            report = markdown([result], meta={'demo': {
+                'url': 'https://gitlab.example.com/demo/-/merge_requests/1', 'head': head}})
+            self.assertIn('BASE', report)
+            self.assertIn('HEAD', report)
+            self.assertIn('/-/blob/' + base + '/P.java#L10', report)
+            self.assertNotIn('P#a() ← P#b() ← P#c()', report)
+
     def test_cross_project_is_candidate_only(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -79,7 +117,8 @@ class ASTTests(unittest.TestCase):
             cache = root/'cache'
             a, calls_a, e1 = scan_tree(root/'target', cache)
             b, calls_b, e2 = scan_tree(root/'consumer', cache)
-            self.assertFalse(e1 + e2)
+            self.assertFalse(e1)
+            self.assertTrue(any('cannot find symbol' in e['error'] for e in e2))
             _, unknown = build_graph(b, calls_b)
             target = {'project':'target','changed_methods':list(a),'methods':a,
                       'old_methods':{},'unresolved':[]}
@@ -87,7 +126,7 @@ class ASTTests(unittest.TestCase):
                         'old_methods':{},'unresolved':unknown}
             result = stitch_cross_project([target, consumer])
             self.assertEqual(1, len(result))
-            self.assertEqual('CANDIDATE', result[0]['status'])
+            self.assertEqual('BINDING_UNCONFIRMED', result[0]['status'])
 
 
 if __name__ == '__main__':

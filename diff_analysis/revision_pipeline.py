@@ -80,11 +80,21 @@ def update_review_package(run_dir):
                     group_units[gid].append([
                         did, unit["id"], unit.get("revision"),
                         unit.get("old_range"), unit.get("new_range")])
+    else:
+        # 首轮使用等价的完整单元，避免首次修订使无关组的指纹一起变化。
+        for cid, owners in diff_owner.items():
+            change = changes[cid][1]
+            for gid in owners:
+                group_units[gid].append([
+                    cid, "U-" + _hash([cid, "whole"])[:16], 1,
+                    change.get("old_range"), change.get("new_range")])
     groups = defaultdict(list)
     for cid, owners in diff_owner.items():
         for gid in owners:
             groups[gid].append(cid)
-    request_plan, updated, reused, decision_stale = [], 0, 0, []
+    request_plan, updated, reused = [], 0, 0
+    # 已失效的历史判断不会因再次生成相同问题包而恢复有效。
+    decision_stale = list(previous.get("decisions_to_revalidate", []))
     enriched = []
     for q in dedup:
         related = q.get("group_ids", [])
@@ -143,6 +153,19 @@ def update_review_package(run_dir):
             filtered.append(item)
             seen_req.add(key)
     current_questions = {q["id"]: q for q in enriched}
+    # 组与差异的影响结论同样受消费者、问题和单元归属变化约束。
+    group_fingerprints = {
+        group: _hash([
+            sorted(cids), sorted(group_units.get(group, [])),
+            sorted(group_impact[group]),
+            sorted((q["id"], q["dependency_fingerprint"])
+                   for q in enriched if group in q.get("group_ids", []))])
+        for group, cids in groups.items()}
+    object_fingerprints = {
+        "GROUP": group_fingerprints,
+        "DIFF": {cid: _hash(sorted(
+            (group, group_fingerprints[group]) for group in owners))
+                 for cid, owners in diff_owner.items()}}
     for decision in state["decisions"]:
         if decision["object_type"] == "QUESTION":
             current = current_questions.get(decision["object_id"])
@@ -155,6 +178,16 @@ def update_review_package(run_dir):
             elif current["revision_status"] == "REVISED":
                 # Legacy judgments lack per-question binding: conservative.
                 decision_stale.append(decision["id"])
+        elif (decision["object_type"] in object_fingerprints and
+              decision["dimension"] in ("IMPACT", "CONFORMANCE")):
+            obj, oid = decision["object_type"], decision["object_id"]
+            current = object_fingerprints[obj].get(oid)
+            stored = decision.get("object_dependency_fingerprint")
+            if stored is None:
+                stored = previous.get("object_dependency_fingerprints", {}).get(
+                    obj, {}).get(oid)
+            if current is None or stored is None or stored != current:
+                decision_stale.append(decision["id"])
         if decision.get("expected_goal_id") in superseded:
             decision_stale.append(decision["id"])
     result = {
@@ -165,6 +198,7 @@ def update_review_package(run_dir):
         "questions": enriched, "evidence_plan": filtered[:200],
         "plan_omissions": max(0, len(filtered) - 200),
         "available_evidence_ids": [x["id"] for x in supplements],
+        "object_dependency_fingerprints": object_fingerprints,
         "questions_reused": reused, "questions_recomputed": updated,
         "decisions_to_revalidate": sorted(set(decision_stale)),
         "warning": "Previously exported bytes remain available, but may not "
@@ -172,6 +206,7 @@ def update_review_package(run_dir):
     folder = root / "revisions"
     folder.mkdir(exist_ok=True)
     snapshot = _hash([result["questions"], result["evidence_plan"],
+                      result["object_dependency_fingerprints"],
                       result["decisions_to_revalidate"]])[:12]
     version = "review-%03d-%03d-%s.json" % (
         result["group_revision"] or 0, result["goal_revision_count"], snapshot)

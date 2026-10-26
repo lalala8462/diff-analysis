@@ -148,12 +148,18 @@ def recompute_review(run_dir):
                         "binding_status": edge["binding"],
                         "status": "CHECK_TOGETHER"})
         impact_cache["|".join(key)] = current_cache
-    old_questions = json.loads((root / "questions.json").read_text("utf-8"))
+    # 继承上一轮有效问题；前轮重算缺失时按累计修订重建，避免恢复旧归属。
+    old_questions = prior or json.loads((root / "questions.json").read_text("utf-8"))
+    question_groups = (affected if prior else {
+        group for rev in state["group_revisions"]
+        for group in rev["affected_group_ids"]})
+    question_changes = (set(revision["affected_change_ids"]) if prior else {
+        did for rev in state["group_revisions"]
+        for did in rev["affected_change_ids"]})
     questions = [q for q in old_questions["questions"]
-                 if not set(q["group_ids"]) & affected and
-                    not set(q["change_ids"]) & set(
-                        revision["affected_change_ids"])]
-    for group in sorted(affected):
+                 if not set(q["group_ids"]) & question_groups and
+                    not set(q["change_ids"]) & question_changes]
+    for group in sorted(question_groups):
         members = sorted(did for did, units in by_diff.items()
                          if any(u["primary_group"] == group for u in units))
         if not members:

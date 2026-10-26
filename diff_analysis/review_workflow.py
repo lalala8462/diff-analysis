@@ -213,8 +213,13 @@ def import_review(run_dir, payload):
             if extra.get("revision") == latest_group["revision"]:
                 questions["questions"] = extra["questions"]
     latest_questions = root / "review_package_latest.json"
+    # 导入时绑定当前对象依赖范围，不将批次级指纹用于无关组的失效判断。
+    from .revision_pipeline import update_review_package
+    update_review_package(root)
+    object_fingerprints = {}
     if latest_questions.is_file():
         current = json.loads(latest_questions.read_text("utf-8"))
+        object_fingerprints = current.get("object_dependency_fingerprints", {})
         questions["questions"] = current["questions"]
         current_scope_fingerprint = _hash([
             current_scope_fingerprint,
@@ -302,6 +307,7 @@ def import_review(run_dir, payload):
         planned_decisions.append({
             **item, "id": did, "created_at_utc": _utc(),
             "question_dependency_fingerprint": question_fingerprint,
+            "object_dependency_fingerprint": object_fingerprints.get(obj, {}).get(oid),
             "scope_fingerprint": current_scope_fingerprint,
             "structural_check": "REFERENCES_VALID",
             "basis_check": "NOT_REVIEWED",

@@ -46,14 +46,23 @@ def markdown(results, cross_candidates=None, meta=None):
               '每条路径由变更方法向其上游调用者展开；并不证明业务行为真的改变。', '']
     for r in results:
         lines.append('### ' + r['project'])
-        paths = [(sym, path) for sym, path in r['impact_paths'].items() if len(path) > 1]
-        for sym, path in sorted(paths, key=lambda x: (len(x[1]), x[0]))[:80]:
-            caller = r['methods'].get(sym) or r['old_methods'].get(sym)
-            lines.append('- **%s**：%s' % (loc(meta.get(r['project'], {}), caller.get('path'), caller.get('start')) if caller else sym, code(' ← '.join(path))))
-        if not paths:
-            lines.append('- 没有解析到上游调用方法；这**不代表没有影响**。')
-        if len(paths) > 80:
-            lines.append('- 其余 %s 条路径省略展示。' % (len(paths)-80))
+        for side, field, method_field, sha_field in (
+                ('BASE', 'old_impact_paths', 'old_methods', 'base'),
+                ('HEAD', 'new_impact_paths', 'methods', 'head')):
+            sha = r[sha_field]
+            lines += ['', '#### ' + side + ' · ' + code(sha), '']
+            paths = [(sym, path) for sym, path in r.get(field, {}).items()
+                     if len(path) > 1]
+            for sym, path in sorted(paths, key=lambda x: (len(x[1]), x[0]))[:80]:
+                caller = r.get(method_field, {}).get(sym)
+                lines.append('- **%s**：%s' % (loc(
+                    meta.get(r['project'], {}), caller.get('path'),
+                    caller.get('start'), sha=sha) if caller else sym,
+                    code(' ← '.join(path))))
+            if not paths:
+                lines.append('- 没有解析到上游调用方法；这**不代表没有影响**。')
+            if len(paths) > 80:
+                lines.append('- 其余 %s 条路径省略展示。' % (len(paths)-80))
         lines.append('')
     lines += ['## 四、重点人工评审项', '']
     any_finding = False
