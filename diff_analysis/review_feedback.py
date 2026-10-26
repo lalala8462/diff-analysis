@@ -256,12 +256,15 @@ def review_status(run_dir):
     latest = {}
     affected = set()
     for rev in state["group_revisions"]:
-        affected.update(rev["decisions_needing_review"])
-    superseded_goals = {event["old_goal_id"] for event in
-                        state.get("goal_revision_events", [])}
+        affected.update(d["id"] for d in state["decisions"]
+                        if d["id"] in rev["decisions_needing_review"] and
+                        d.get("created_at_utc", "") <= rev["created_at_utc"])
+    superseded_goals = state.get("goal_revision_events", [])
     evidence = _load_supplement_state(root)["evidence"]
     for decision in state["decisions"]:
-        if decision.get("expected_goal_id") in superseded_goals:
+        if any(decision.get("expected_goal_id") == event["old_goal_id"]
+               and decision.get("created_at_utc", "") <= event["created_at_utc"]
+               for event in superseded_goals):
             affected.add(decision["id"])
         if decision["object_type"] == "QUESTION" and any(
                 event.get("question_id") == decision["object_id"] and
