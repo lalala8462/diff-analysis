@@ -71,6 +71,15 @@ def update_review_package(run_dir):
     previous = (json.loads(prev_file.read_text("utf-8"))
                 if prev_file.is_file() else {})
     old = {q["id"]: q for q in previous.get("questions", [])}
+    group_units = defaultdict(list)
+    if state["group_revisions"]:
+        for did, units in state["group_revisions"][-1]["units"].items():
+            for unit in units:
+                gid = unit.get("primary_group")
+                if gid and not unit.get("unassigned"):
+                    group_units[gid].append([
+                        did, unit["id"], unit.get("revision"),
+                        unit.get("old_range"), unit.get("new_range")])
     groups = defaultdict(list)
     for cid, owners in diff_owner.items():
         for gid in owners:
@@ -82,13 +91,15 @@ def update_review_package(run_dir):
         goal_refs = sorted((e["old_goal_id"], e["new_goal_id"]) for e in
                            state.get("goal_revision_events", [])
                            if set(related) & goal_affected)
-        membership = sorted((g, tuple(sorted(groups.get(g, [])))) for g in related)
+        membership = sorted((g, tuple(sorted(groups.get(g, []))),
+                             sorted(group_units.get(g, []),
+                                    key=lambda entry: (entry[0], entry[1])))
+                            for g in related)
         fingerprint = _hash([q["id"], q.get("change_ids"), related, membership,
                              goal_refs, q.get("path_edge_ids", []),
                              sorted((g, group_impact[g]) for g in related)])
         last = old.get(q["id"])
-        unchanged = (last and last.get("dependency_fingerprint") == fingerprint and
-                     not set(related).intersection(group_affected))
+        unchanged = bool(last and last.get("dependency_fingerprint") == fingerprint)
         if unchanged:
             reused += 1
         else:
