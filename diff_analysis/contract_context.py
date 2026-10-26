@@ -174,7 +174,7 @@ def discover_contract_context(run_dir, repos):
     # Contract declarations often live outside Java methods (DTO fields,
     # enums and MyBatis XML/SQL). Only inspect files already in the final
     # changed-file inventory at pinned SHAs, never the entire source tree.
-    declaration_pattern = re.compile(r"<(?:result|id|association|collection)\\b", re.I)
+    declaration_pattern = re.compile(r"<(?:result|id|association|collection)\b", re.I)
     for group, entries in sorted(groups.items()):
         if len(facts) >= MAX_CONTEXTS:
             break
@@ -213,7 +213,7 @@ def discover_contract_context(run_dir, repos):
                         omissions.append({"path": path, "side": side,
                                           "reason": "CONTRACT_NOT_FOUND"})
                         continue
-                    if b"\\x00" in data:
+                    if b"\x00" in data:
                         omissions.append({"path": path, "reason": "NON_TEXT_CONTRACT"})
                         continue
                     byte_count += len(data)
@@ -227,7 +227,7 @@ def discover_contract_context(run_dir, repos):
                     if path.endswith(".java") and FIELD.search(line):
                         kind = "CONTRACT_FIELD_DECLARATION"
                     elif path.endswith(".java") and ENUM.search(line) and (
-                            re.search(r"\\benum\\b", "\\n".join(cached[key][:index+1]))):
+                            re.search(r"\benum\b", "\n".join(cached[key][:index+1]))):
                         kind = "ENUM_DECLARATION_CANDIDATE"
                     elif path.endswith(".xml") and declaration_pattern.search(line):
                         kind = "MYBATIS_MAPPING_CANDIDATE"
