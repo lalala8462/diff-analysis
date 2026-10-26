@@ -347,6 +347,8 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     try:
         from .unified_pipeline import rebuild_unified
         release["unified_status"] = rebuild_unified(root)
+        from .revision_pipeline import update_review_package
+        release["review_package_status"] = update_review_package(root)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         release["unified_status"] = {
             "status": "PARTIAL", "reason": type(exc).__name__ + ": " + str(exc)[:250]}
