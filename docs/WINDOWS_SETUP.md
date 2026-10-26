@@ -456,7 +456,7 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
 
 说明当前 JDK 编译器 API 没有被正确找到。JDK 8 的相关 API 通常位于完整 JDK 的 lib/tools.jar 中；JRE 目录没有这个文件。
 
-扫描器会判断 javac 版本；使用 JDK 8 时将 tools.jar 加入编译与运行 classpath，找不到时输出错误信息。分析工具可以独立使用完整 JDK 17，即使被分析项目仍用 Java 8；可选 RefactoringMiner 3.x 的运行环境另需 Java 17+。
+扫描器会判断 javac 版本；使用 JDK 8 时将 tools.jar 加入编译与运行 classpath，找不到时输出错误信息。本项目现在仅以完整 JDK 8 作为支持和 CI 验证目标。某些较新的 RefactoringMiner 发行版需要更高 JDK，属于未支持的可选外部工具；不要为了该工具升级主扫描器的 Java 要求。
 
 请在 PowerShell 中检查：
 
@@ -466,13 +466,13 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
     where.exe javac
     $env:JAVA_HOME
 
-如果必须使用 JDK 8，检查：
+检查当前 JDK 8：
 
     Test-Path "$env:JAVA_HOME\lib\tools.jar"
 
 若返回 False，说明 JAVA_HOME 很可能指向 JRE、JDK 安装不完整或路径配置错误。将 JAVA_HOME 调整到**完整 JDK**目录，再重新打开终端测试。
 
-如果已安装 JDK 17，可仅在当前终端切换（路径请替换成实际安装位置）：
+在当前终端明确切换到 JDK 8（路径请替换为实际安装位置）：
 
     $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17"
     $env:Path = "$env:JAVA_HOME\bin;$env:Path"
@@ -480,7 +480,7 @@ git -C "D:\repos\spms-back" rev-parse my-feature-branch
     javac -version
     .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 
-javac 编译诊断按 UTF-8 输出。当前入口先扫描后生成新底账，JDK／扫描器整体失败仍可能阻断运行；底账先落盘与阶段隔离是待实施设计，不能根据本文推定已有完整降级报告。
+javac 编译诊断按 UTF-8 输出。当前入口优先保存 Git 底账，然后执行 JDK 8 AST 扫描；部分失败会留下阶段缺口，但并不代表所有后续增强阶段都已支持自动恢复。
 
 ## 6. 故障排查
 
