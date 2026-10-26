@@ -1,213 +1,99 @@
 # Diff Analysis
 
-**帮助审核者看清多个 Java 项目的版本变化、理解可能需求，并检查对既有功能和其他项目的影响。**
+面向**多 Java 项目的版本级变更影响审核**。以每个项目固定的 BASE/HEAD Git commit 的最终净差异为底账，结合提交来源、Java 调用关系、跨项目协议线索和人工审核记录，生成可追溯的离线报告。
 
-系统以各项目两个指定 Git 版本的最终净差异为底账，结合范围内的提交说明、逐行来源和可选重构证据整理候选需求，导出人工报告及供本地 AI 阅读的离线资料。
+**运行要求：Git、Python 3.9+、完整 JDK 8。** 支持 Windows PowerShell/CMD 与 Linux；CI 仅配置 Windows/Ubuntu + JDK 8。不调用模型接口，不执行被分析项目的构建、测试或业务脚本，不自动发布或合并。
 
-**当前版本不连接任何模型接口，不配置模型 API 或密钥，不自动上传源码。** AI 阅读和推理由用户在工具外完成；现已提供人工／AI 结论导入、人工归属修订和关联重审的基础接口；完整语义依据复核仍依靠人工或工具外 AI，候选分组、结构映射和交叉线索都不代表需求或业务影响已经确认。
+> **开发分支待集中验证。** 已提交代码不等于已通过测试或真实 GitLab、Dubbo、MQ 集成验收；“未发现消费者”不证明没有影响。
 
-更新历史见 [变更记录 CHANGELOG.md](CHANGELOG.md)。后续在同一文件中按日期时间记录变更，现行说明和设计直接原地更新，不再为每次修订新建版本文档。
+## 快速开始
 
-## 1. 当前能力与首期边界
+Windows PowerShell 示例：
 
-| 能力 | 当前实现 | 限制与待补项 |
-| --- | --- | --- |
-| 输入与版本 | 本地 Git、未合并 GitLab MR、多项目向导；CHANGE/EVIDENCE 双角色及各自固定旧、新 SHA；EVIDENCE 可同 SHA | 实际部署绑定仍未知；实际 GitLab 凭据／API 接入和依赖包版本识别待验证 |
-| 最终差异 | Git 净变化底账先原子落盘、独立阶段状态；向导及非交互 CLI 保留部分报告；离线重建 | 旧式兼容报告及部分可选增强仍可能失败；重建不恢复原静态分析结果 |
-| 提交来源 | 范围内提交 DAG、说明、文件候选及新变更行 git blame 候选 | blame 只追踪最后修改；删除行、大 Hunk、混杂提交不能据此确认真实需求 |
-| 候选分组 | 人工固定 SHA 归属优先；否则按新变更行的唯一任务号，必要时回退文件级唯一任务号 | 无唯一任务号仍独立保留；人工拆合与细分评审单元已有基础接口；多项目语义分组正确性仍待验证 |
-| 结构映射 | 可选 RefactoringMiner CLI、CodeTracker 标准化桥接导入、受限的多提交身份链 | 外部依赖需要按侧提供 JAR 哈希，仍不覆盖动态代理或任意 DAG 追踪，不证明行为等价 |
-| 行为混杂提示 | Extract Method 的文本／条件／运算符／常量启发式检查 | `POSSIBLE_MIXED_BEHAVIOR` 是待核实线索，不等于纯度证明或缺陷 |
-| 影响分析 | 两侧独立 Java 调用点／候选边／未解析调用与多来源传播；直接变化节点关系、旧版消费者及跨项目连接候选，并提供独立版本统一图 | 增加 javac 精确符号归属与有界协议发现/人工绑定，但动态调用和实际环境连通仍不能凭静态代码证明 |
-| 输出与存储 | 增加问题式报告、证据清单、受限固定 SHA 补证、目标／规则导入、人工与 AI 独立结论、评审单元修订及复核状态 | 已有完整方法、整份契约文件及问题驱动自动选取基础功能；自动深层契约发现、运行态事实及大规模验收仍待补 |
+~~~powershell
+git clone https://github.com/lalala8462/diff-analysis.git
+cd diff-analysis
+git switch feat/p1a-ledger-first-checkpoint
 
-待分析主体是 Java；SQL、XML、配置及前端等配套文件的变化也进入底账，但登记不等于已完成语义分析。依赖判断以指定旧、新版本的代码为依据；比较范围内的提交用于解释来源，不以提交说明证明依赖。
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+java -version
+javac -version
 
-完全回退的中间变化不生成最终需求。一组 SHA 表示本次评审组合，部署对应关系未知时不能认定为生产组合。更早历史的共同修改、预计合并结果和业务执行验证不属于首期范围。
+# 交互输入多个本地项目或 GitLab MR
+.\.venv\Scripts\python.exe -m diff_analysis wizard
 
-需求规格见 [功能规格](specs/001-change-impact-review/spec.md)，补齐七项缺口及问题驱动评审的方案见 [当前设计](docs/PIPELINE_V4.md)。
-
-## 2. 总体流程与开发目标
-
-当前按证据组织离线资料；下图是目标流程。底账优先隔离、两侧候选关系、结构化补证和独立评审记录已实现基础接口；完整绑定、证据语义正确性和动态验证仍未实现，不得据此推断无影响。
-
-~~~mermaid
-graph TD
-    A["选择项目并固定旧版、新版 SHA"] --> B["保存最终差异与代码证据"]
-    B --> C["提交来源、Java AST、可选结构映射"]
-    C --> D["候选需求组、组内一致性与组外配套检查"]
-    D --> E["生成评审问题并检查必要证据"]
-    H["用户提供或人工确认的预期目标与规则点"] --> E
-    E --> F["按固定版本取证并导出人审及离线资料"]
-    F --> G["用户在工具外交给本地 AI"]
-    F --> I["人工阅读与确认"]
-    G --> J["导入双方判断、阅读范围及补证请求"]
-    I --> J
-    J -->|需要补证| E
-    J --> K["结构校验与判断依据复核"]
-    K --> L["保存独立结论，依赖修订后选择性重审"]
+# 或分析一个本地项目的固定版本，替换路径与 SHA
+.\.venv\Scripts\python.exe -m diff_analysis review-local --repo "D:\repos\spms-back" --project "rhf/spms-back" --base "<完整旧CommitSHA>" --head "<完整新CommitSHA>"
 ~~~
 
-- 关系边是影响分析的基础；代表路径只用于展示，不能替代关系图。
-- 需求归属与影响关系分开，两个需求需要联合检查时不自动合组。
-- 前后 30 行是快速阅读窗口，完整影响判断还可能需要远处方法、类型、契约和未修改消费者代码。
-- 代码归纳的候选目标与权威预期目标分开。没有后者时，“是否超出需求”保持未确定。
-- 现有离线报告不包含模型结论。后续保存人工与外部 AI 判断时，应分别记录对象、理由、证据和修订。
-
-### 2.1 问题驱动的评审机制（已实现基础闭环，仍有限制）
-
-目标是让审核者逐项回答业务问题，并在同一处看到必要代码、判断条件和缺口。以下五项目前已提供初步结构化接口，完整人工反馈与场景效果仍需验证。继续使用本地 CLI／结构化文件和离线 AI，不建设企业级资产平台作为前置条件。
-
-| 机制 | 设计调整 | 提供给审核者的结果 |
-| --- | --- | --- |
-| 分组合理性检查 | 检查组内是否混入不同目标，以及接口、状态、字段变化是否需要组外配套；给出保留、拆分、合并或联合评审建议 | 建议附正反依据；存在调用关系不强制合组，人工调整后重算受影响项 |
-| 按问题补证 | 评审问题绑定固定版本和必要证据；补证请求写明缺失方法／契约／消费者、理由及预算，由用户交回只读取证器 | 已提供、部分提供、未找到、绑定未确认和预算耗尽分别记录；支持增量证据包 |
-| 业务规则点映射 | 将目标细化为触发条件、预期行为、不变量及建议验证场景，按批次关联代码；区分候选规则和人工确认规则 | 双向核对“规则是否有实现证据”和“行为变化是否有目标解释”；没有权威目标不确认符合需求 |
-| 跨项目连接点 | 先记录 Java 接口与已提供的接口契约，绑定调用两端、依赖包／服务身份、版本及证据 | 明确影响追到哪里、缺哪段绑定；名称相同仅形成候选，HTTP、MQ、数据层按支持范围逐步扩展 |
-| 结论复核与重审 | 程序校验引用、版本、必要证据覆盖及修订适用性；人工或外部 AI 复核证据能否支持判断 | 结构校验通过不等于判断成立；双方结论分别保存，仅重建受修订影响的资料与结论 |
-
-### 2.2 一个评审问题如何处理（目标行为）
-
-例如 A 的返回状态由 `SUCCESS` 改成 `ACCEPTED`，消费者 B 未修改：系统从两侧关系发现 B，生成“B 是否仍按旧状态处理”的问题，提取 A 的相关契约及 B 的判断分支。若另一组有 B 的配套变化，建立联合评审项；只有支持同一目标的归属证据才建议合组。若 B 的代码或实际绑定无法取得，保留证据不足，不推定故障或无影响。
-
-补证循环在必要证据已提供后转入判断；无法取得绑定、预算耗尽、用户停止，或一轮未取得新的有效证据时停止补证并保留缺口。证据充足也不自动等于结论成立。系统不替外部 AI 自动访问仓库，不运行被分析项目的构建或业务。
-
-这些机制参考了公开方案中的分组反馈、上下文扩展、规则点映射和跨层连接思路；来源及适配边界见 [详细设计](docs/PIPELINE_V4.md#公开方案的设计参考)。工程借鉴不代表已确认可自由实施或具备专利新颖性。
-
-## 3. Windows 安装与启动
-
-安装依赖、首次安装、已有仓库更新、交互向导、本地／GitLab MR 比较、消费者与基线命令，统一见 [安装与启动指南](docs/WINDOWS_SETUP.md)。README 只保留入口，具体步骤在指南中维护。
-
-## 4. 报告在哪里，怎样阅读？
-
-默认父目录为 `.diff-analysis/runs`，可用 `--run-root` 修改。每次创建独立的 UTC 日期时间＋随机标识目录；例如 `20261023T050000Z` 对应北京时间 2026-10-23 13:00。
+需要检查**未修改消费者**时，在向导选择 EVIDENCE 角色，或为 review-local / review-mrs 追加以下参数：
 
 ~~~text
-.diff-analysis/runs/20261023T050000Z-a1b2c3d4/
-  report.md                  人审摘要：项目、候选组、交叉项与缺口
-  ai_review.md               全部分组与代码上下文，供本地 AI 离线阅读
-  ledger_checkpoint.json      Git 原始净差异底账、逐项目采集状态（非交互 CLI）
-  analysis.json              净差异、提交、归属及结构映射等结构化资料
-  evidence/
-    D-xxxxxxxxxxxxxxxx.md    单条差异、固定版本及两侧前后约 30 行
-  group_reports/
-    G-xxxxxxxxxxxxxxxx.md    单组提交、变化、代码和交叉线索
+--evidence "rhf/consumer=D:\repos\consumer@<固定BASE-SHA>@<固定HEAD-SHA>"
 ~~~
 
-优先打开独立目录的 `report.md`，而不是原 `--output` / `--json-output` 生成的旧格式兼容输出。终端会打印离线 AI 报告 `ai_review.md` 的完整路径。
+EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次需求。多个自建 GitLab MR、只读 Token、JAR classpath 清单等操作见 [Windows 操作指南](docs/WINDOWS_SETUP.md)。
 
-版本较小时可将 `ai_review.md` 作为资料交给本地 AI；版本较大时逐组提供 `group_reports/G-*.md`，再结合全局交叉项汇总。报告附带分析提示，要求引用 D-* 并区分源码事实、来源候选和业务推测。**工具无法自动确认外部 AI 实际读到了哪些文件，也不管理模型上下文预算或结果。**
+## 已提供的分析链路
 
-当前代码证据主要保留变化窗口；关联方法、契约和未修改消费者代码不足时，不能仅凭名称完成业务影响判断。源码／历史有大小或数量限制，长代码行也可能被截短，后续需完善逐类遗漏及阅读范围清单；“按组导出”不等于全部必要上下文已提供。
-
-目标中的重点评审项将按“业务问题 → 前后行为 → 成立条件 → 差异及双方相关代码 → 缺失证据 → 人工／AI 判断”展示，直接嵌入变化前后约 30 行，必要时展开完整方法；技术路径和固定 SHA 放在证据定位中。当前新增 `questions.md`、`questions.json`、`evidence_manifest.json` 并内联两侧差异窗口；可用 `supplement` 追加指定项目／固定 SHA／范围的代码证据。仍不能自动证明完整方法、契约与消费者绑定，也不能判定业务结论。
-
-## 5. 可选 Java 重构与人工归属
-
-默认不需要安装下面的工具。非交互 CLI 先持久化 Git 底账；Java 静态扫描异常会记录阶段失败并保留部分报告。向导和可选增强的失败隔离仍待完善；可使用 `rebuild-checkpoint` 在没有 Git/JDK 的情况下重建基础报告。
-
-### RefactoringMiner：本地 CLI 适配
-
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis wizard --refactoringminer-bin "D:\Tools\RefactoringMiner\bin\RefactoringMiner.bat"
-~~~
-
-程序调用 `-bc <repo> <baseSHA> <headSHA> -json <output>` 收集重构事件，并关联最终 D-*。记录 `evolution_relations`；对符合严格条件的线性多提交事件形成 `element_chains`。第一父链、元素身份或事件间稳定性不满足时降级，不声称支持所有分支合并历史。
-
-Extract Method 检查是文本启发式：`TEXTUAL_EXTRACTION_CANDIDATE` 不证明纯重构；新增条件、运算符或常量可能产生 `POSSIBLE_MIXED_BEHAVIOR`，也可能需要人工排除误报。具体安装见 [RefactoringMiner 官方说明](https://github.com/tsantalis/RefactoringMiner/blob/master/documentation/how-to.md)。
-
-Git 将跨类移动识别为文件重命名时，方法体可能没有行差异。两侧路径吻合同一条改名记录时，工具保留文件级演进候选 RENAMED_FILE_CANDIDATE，并以 mapping_basis 区分 Hunk 范围和文件关联；该候选不表示方法修改行已被精确定位。
-
-### CodeTracker：标准化桥接导入
-
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis wizard --codetracker-evidence "G:\Code\refactoring-evidence"
-~~~
-
-目前不直接调用 CodeTracker Java API。需由外部工具将映射转为项目自定义的 `codetracker-bridge-v1` JSON；这不是其原生输出。校验 project、完整 base_sha／head_sha，以及 mappings 中 old／new 的 Git 相对路径和起止行。可传单文件或目录；目录按项目名将 / 替换为 _ 查找，例如 `local_cps.json`。格式示例见 [设计中的现有增强接口](docs/PIPELINE_V4.md#当前可用增强接口)。
-
-### 人工 Hunk 任务归属
-
-~~~powershell
-.\.venv\Scripts\python.exe -m diff_analysis wizard --attribution-rules "G:\Code\attribution"
-~~~
-
-先从 `analysis.json` 查找 D-*，再用 `attribution-rules-v1` JSON 对固定项目、旧新 SHA 和 `diff_id` 提供 `issue_keys` 与明确 `reason`。目录同样按项目标识匹配文件；范围不匹配时拒绝规则并保留原始差异。
-
-一个 Hunk 有多个任务时可提供不重叠的 `segments`，字段为 `new_start`、`new_count`、`issue_key`。它仍标记为 `MIXED_HUNK_REVIEW`，不自动拆成两个已确认需求。这项归属规则也不等同于完整的需求确认或人工／AI 评审记录。
-
-## 6. 下一步重点
-
-继续使用 Python、Java 分析器、SQLite 和本地命令行，优先完成首期评审流程：
-
-| 优先级 | 工作重点 |
-| --- | --- |
-| P1-A（待实测） | CLI／向导 Git 底账优先、阶段清单、局部失败及离线基础报告重建；MR 逐项目准备失败已隔离；完整分阶段恢复和增强异常边界待验证 |
-| P1-B（基础实现，待实测） | 两侧候选边、未解析调用明细、多来源传播与旧版消费者；CHANGE/EVIDENCE 输入和同 SHA 消费者；仍需验证跨服务真实绑定 |
-| P1-C（基础实现，待实测） | 自动生成审核问题及证据清单、指定 SHA 的按行补证、累计轮次／字节预算、重用去重和无进展停止；深层自动关联扩展待补 |
-| P2-A（基础实现，待实测） | 导入人工确认目标／规则点与独立 AI／人工结论、引用校验、依据复核、分歧和目标／证据修订后的定向重审；不自动认证结论正确 |
-| P2-B（部分实现，待实测） | KEEP/JOINT_REVIEW 建议、Hunk 新版行切分、人工拆组／移动／合组、遗漏保留及关联判断失效标记；已有按组来源传播的增量重算；完整语义归组和已部署跨服务运行态验证仍待补 |
-| 持续评估 | 分组误合／误拆、消费者发现、无关候选、补证轮数及有效新增证据、人工调整次数、审核用时及规模 |
-| 首期之后 | 根据实际部署和用户验证加强 HTTP／MQ／数据层绑定，建立长期需求／测试资产；真实运行证据需另行授权 |
-
-已有 blame、结构映射和归属规则可继续复用，但精确提交归因不替代上述影响基础。SmartCommitCore 可借鉴关系分组；CodeTracker 的桥接不等于其完整追踪能力；Code Maat 的更早历史共同修改仍放在首期之后。
-
-
-
-### 本轮新增的离线命令
-
-- `rebuild-checkpoint`：通过原始 Git 底账重建基础人审／AI 资料。
-- `supplement`：用户明确提供固定 SHA 和本地仓库后，按路径／行号读取最多 500 行、累计预算限定的证据。
-- `import-review`：导入人工确认目标、规则点及 HUMAN／AI 独立判断。
-- `revise-groups`：保留 D-* 原始 Hunk，创建／修订评审单元及人工归属。
-- `import-basis-check`、`review-status`：将“引用结构有效”与“依据支持结论”分开，并汇总待重审与分歧。
-
-输入 JSON 样例及 Windows 命令见 [安装与启动指南](docs/WINDOWS_SETUP.md)。以上功能均**未调用任何 AI，也不会运行被分析仓库的构建脚本**。自动化测试尚未实际执行，使用前请一并验证。
-
-
-### 新一轮：Java 语义归属、跨协议证据与增量重算（2026-10-24）
-
-这一轮基于同一个 Draft PR 继续实现四项遗留能力，并仍处于 **尚未执行测试** 状态：
-
-| 模块 | 已提交的可用接口 | 不可自动推断的部分 |
+| 环节 | 代码和产物 | 证据边界 |
 | --- | --- | --- |
-| Java | `JavaAstScanner` 的 javac 符号归属与严格唯一绑定；`java_classpath.py` 按项目及 BASE/HEAD SHA 校验依赖 JAR 哈希 | Spring 注入、动态代理、反射以及未纳入 classpath 的库仍为候选；错误的部署依赖版本无法凭代码证明 |
-| Dubbo/HTTP/MQ/数据库 | `discover-connections` 只枚举固定版本源码线索；`bind-connections` 校验两端协议身份、环境、Git blob、代码位置与用户部署声明 | 结果最多是 `USER_ATTESTED_MATCH`，不能伪装成实际运行链路；消息格式、数据库字段级血缘仍未自动解析 |
-| 完整证据 | `semantic-evidence`／`auto-evidence` 读取 AST 精确定位的完整方法，或固定版本的整份契约/配置文件；最新证据覆盖另存修订清单；补证轮次、累计字节和重复请求受控 | 大文件、非文本、方法未能解析、预算耗尽均显式标记，不自动推测语义 |
-| 人工归属重算 | `revise-groups` 触发 `recompute_review`；按修订后的 ReviewUnit→Java 方法映射重算受影响组，缓存复用未受影响的传播；支持独立 `recompute-review` | 对拆分后未知的 BASE 子范围保持 `OLD_UNIT_RANGE_NOT_PROVEN`；不自动创造缺失关系边或执行原业务代码 |
+| 固定输入 | 按项目、角色、BASE/HEAD SHA 保存 Git 文件事件、最终净差异、来源候选，Git 底账优先落盘 | 提交任务号不等于需求；版本组合不等于部署组合 |
+| Java 关系 | JDK 8 javac AST 与可归属方法标识；两侧调用边、未解析调用、多来源反向传播 | 缺依赖、动态代理、反射和不确定重载不能自动证明调用 |
+| 跨项目依赖 | discover-connections 搜索 Dubbo/HTTP/MQ/数据库源码线索；bind-connections 校验两端固定版本、协议身份及人工部署声明，进入统一关系图 | USER_ATTESTED_MATCH 只表示人工声明和代码吻合，**不是运行时链路** |
+| 问题及取证 | 生成 ReviewQuestion；contract-context 定位受影响消费者的分支、DTO/枚举、MyBatis/SQL 候选位置；读取完整方法或契约文件 | 标识符共现不是类型绑定或业务数据流证明 |
+| 审核记录 | import-review 保存人工确认的 ExpectedGoal、规则点以及人工/外部 AI 独立判断；import-basis-check 单独复核依据 | 结构化引用合法不证明结论成立；AI 实际阅读范围未知 |
+| 人工修订 | revise-groups 拆分、移动、合并 ReviewUnit；局部更新跨项目传播、问题和必要证据计划，保留修订历史 | 不从新版拆分行推算旧版行；不改写原始 D-* 底账 |
 
-本轮新增 **15 项** 针对 Java 重载/继承、协议绑定、源码发现、完整方法与契约、增量重算、JAR 固定版本的测试；从前一次记录的 77 项推算为 **90 项测试用例，尚未成功执行**。GitHub Actions 上此前的任务在 0 个测试步骤时失败，不能认定通过。使用说明见 [Windows 安装与启动指南](docs/WINDOWS_SETUP.md)。
+统一图中的方法和协议端点均附项目、侧别和 Git SHA，沿 caller → callee 的反方向追踪潜在消费者。端点锚定不唯一、协议身份或版本未知时保留候选及 omissions，不建立虚假的确定关系。
 
+~~~text
+review-local / review-mrs / wizard   选择项目与固定版本
+rebuild-checkpoint                  由 Git 底账恢复基础报告
+discover-connections                检索协议线索
+bind-connections                    核验两端代码和部署声明
+rebuild-unified                     更新版本统一图与影响传播
+contract-context                    变化字段、方法及消费者分支候选
+auto-evidence / semantic-evidence   按问题取完整方法或契约文件
+supplement                          固定 SHA 的受限代码补证
+revise-groups / recompute-review    归属修订与局部重算
+import-review / import-basis-check  判断、目标与依据复核
+review-status                       查看分歧和待重审结论
+~~~
 
-### 2026-10-26：三个重点工作包（开发分支已提交，待验收）
+不内置 AI 客户端。用户可将离线报告交给本地 AI，再通过 import-review 导入其结构化判断。所有自动归组、提交归因和跨项目关系仍需审核者核实。
 
-| 工作包 | 本轮实现 | 当前边界 |
-| --- | --- | --- |
-| 01 统一版本关系图 | `unified_graph.py` 为 Java 和 Dubbo／HTTP／MQ／数据库端点构造版本化有向边，记录项目、BASE/HEAD、SHA、证据与可信度；`unified_pipeline.py` 从变更组向上反向遍历，保留跨项目多跳消费者和缺失锚点 | 只有能在本次版本索引中唯一定位的方法才连到端点；用户部署声明为 `ATTESTED_NOT_RUNTIME_VERIFIED`，不是实际运行链路 |
-| 02 细化契约与按问题取证 | `contract_context.py` 在受影响的方法、跨项目消费者和本次修改的契约文件中，根据差异字段标识定位判断分支、DTO 字段、枚举、MyBatis 映射及 SQL 字段引用；`auto-evidence` 自动补齐关联完整方法/文件选择器 | 当前字段和分支关联是有 Git 版本证据的词法候选，不声称已实现 Java 数据流或 SQL 字段级精确血缘 |
-| 03 修订驱动增量流水线 | 人工 ReviewUnit 修订后复用已固定关系事实，局部更新统一图传播、组间线索、消费者问题及证据计划；ExpectedGoal 被确认修订时，`revision_pipeline.py` 只标记依赖该目标的审核问题与结论，保留历次产物 | 不重写 Git 底账；已有证据可复用但必须重新确认是否足以支持新结论；未解析的旧版子行不能机械映射 |
+## 运行目录与阅读顺序
 
-新增 `unified_graph_latest.json`、`unified_impact_latest.json`、`contract_context_latest.json`、`review_package_latest.json` 及 `revisions/` 中的增量版本。协议绑定导入将同步更新跨项目传播和问题包。CLI 增加 `rebuild-unified`、`contract-context`；完整用法见 [Windows 指南](docs/WINDOWS_SETUP.md)。
+默认每次在 .diff-analysis/runs/ 下创建独立的 UTC 时间＋随机标识目录，可通过 --run-root 修改。建议依次查看：
 
-**JDK 目标仅为 8**：CI 仅检查 Temurin JDK 8 的 Windows／Linux 组合；Java 扫描器不得以 JDK 17/21 特性作为先决条件。本轮新增 9 个定向单元测试（统一图 5、增量问题／缓存 2、字段及判断证据 2），历史记录预估共 **101 项**；截至本次更新，仍无成功的完整自动化测试记录。
+1. **report.md、stage_manifest.json**：范围、候选组、失败阶段和覆盖缺口。
+2. **questions.md / questions.json、group_reports/、evidence/D-*.md**：问题、固定版本差异及代码窗口。
+3. **unified_graph_latest.json / unified_impact_latest.json**：版本关系边、反向影响与遗漏；导入协议绑定前仍保留 Java 静态图。
+4. **contract_context_latest.json、supplements/**：完整方法、契约及字段、分支候选，读取受固定 Git SHA、轮次和字节预算约束。
+5. **review_package_latest.json、review_state.json、revisions/**：当前问题/证据计划、人工归属、预期目标、判断与版本化快照。
+6. **ai_review.md**：用于工具外 AI 的离线资料；导出成功**不表示 AI 已完整阅读**。
 
-## 7. 文档和操作边界
+ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和分析事实。人工修订只更新派生资料，**不覆盖**原净差异。旧版 --output/--json-output 兼容文件不代表完整运行目录。
 
-- [变更记录 CHANGELOG.md](CHANGELOG.md)：唯一的日期时间变更记录，包含本次文档评估与整合结果。
-- [功能规格](specs/001-change-impact-review/spec.md)：产品范围与验收目标；独立评审有本地基础接口，但效果尚待验证。
-- [当前设计](docs/PIPELINE_V4.md)：七项缺口、问题驱动补证、规则点映射、分组检查和结论复核；已实现部分基础接口，其余仍为待实施或待验证范围。文件名中的 V4 仅为既有路径，不再随修订递增。
-- [安装与启动指南](docs/WINDOWS_SETUP.md)：环境、安装更新、启动与命令用法、GitLab 凭据和排错。
+## 尚需完成与验证
 
-文档维护规则：
+- **真实部署绑定**：Dubbo 2.6.x 注册/消费版本、HTTP 目标路由、MQ 交换机/路由、MyBatis 与数据源、字段级血缘需要实际项目证据；现有源码关联无法证明 Spring 动态代理和运行时行为。
+- **工程测试**：当前开发分支新增代码没有成功完成 Python 单测和 JDK 8 编译验证；GitHub Actions 此前出现任务 0 步骤失败，不能据此认定代码通过或失败。
+- **恢复和质量**：阶段重试、重构工具兼容、规模／预算截断及影响漏检、分组误报率需要预标注样本验收，不能用问题数量替代准确度。
+- **首期之外**：Web、长期需求资产、历史共同修改、预测合并树与真实业务执行对比不是当前既有功能。
 
-- README 维护当前能力、使用入口和路线概览；当前设计维护详细方案与验收，安装与启动指南统一维护环境、安装更新、命令用法及排错。
-- 架构与计划在当前设计中维护，不再新增 `ARCHITECTURE_V*`、`DEVELOPMENT_PLAN_V*`、`PIPELINE_V*` 或按日期拆分的文档。未来只有独立主题确有必要时才新增文档。
-- 每次有实际变化，原地更新对应说明，并在根目录 `CHANGELOG.md` 顶部追加 `YYYY-MM-DD HH:mm:ss +08:00` 记录，写明变化、实现状态及验证边界。日期时间是文档修订标识，不替代软件版本或发布记录。
-- 历史决策摘要集中在 CHANGELOG，历史正文通过 Git 查阅；旧文档不继续维护为另一套当前方案。分析生成的独立运行报告目录仍按日期时间保留，不属于本规则中的设计文档。
-- 旧 v2／v3 及 P0 文档已完成内容归并，并经用户审批移入回收站；清理记录见 CHANGELOG，历史正文通过 Git 查阅。原模型客户端及其参数不作为现行用法。
+~~~powershell
+.\.venv\Scripts\python.exe -m compileall -q diff_analysis tests
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+~~~
 
-不执行待分析项目的构建或脚本，不修改其代码、分支和提交；可选 RefactoringMiner 只按显式路径运行分析工具。基线验证、源码登记、影响判断和需求确认分别表达，不自动合并、发布或晋升版本基线。
+当前只按 **JDK 8** 验证，不以 JDK 17/21 作为主工具运行要求；集中验收之后再决定是否合并开发 PR。
 
-## 8. 验证边界
+## 文档导航
 
-最近一次可确认的完整代码测试记录为 2026-10-23 的 **52 项单元测试通过**。之后各轮共新增 49 项测试用例，预计累计 101 项（均需实测验证），GitHub Actions 尚未成功执行（任务未产生执行步骤），不能声称本次更改已通过测试；详细范围见 [CHANGELOG](CHANGELOG.md)。真实 GitLab、Windows/Linux JDK 8 及业务影响效果仍需专项验证。
+- [Windows 操作指南](docs/WINDOWS_SETUP.md)：安装、GitLab、JSON 请求和命令示例。
+- [当前管线与验收设计](docs/PIPELINE_V4.md)：阶段契约、覆盖预算、人工修订、后续目标；设计目标不能当作已完成能力。
+- [功能规格](specs/001-change-impact-review/spec.md)：行为约束与验收口径。
+- [CHANGELOG](CHANGELOG.md)：历史开发记录和决策，README 不再按日期堆叠状态。
