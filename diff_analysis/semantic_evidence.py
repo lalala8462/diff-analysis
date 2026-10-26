@@ -27,6 +27,10 @@ def collect_semantic_evidence(run_dir, request, repos,
     if revised.is_file():
         latest = json.loads(revised.read_text("utf-8"))
         valid_questions.update(q["id"] for q in latest.get("questions", []))
+    current = root / "review_package_latest.json"
+    if current.is_file():
+        latest = json.loads(current.read_text("utf-8"))
+        valid_questions.update(q["id"] for q in latest.get("questions", []))
     scope = {l["project"]: l for l in release["ledgers"]}
     graph = {(g["project"], g["side"], g["snapshot_sha"]): g
              for g in release.get("relations", {}).get("graphs", [])}
