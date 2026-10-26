@@ -252,8 +252,10 @@ def correlate(run_dir, request, repos):
     # immutable code and Git ledgers are never mutated.
     from .unified_pipeline import rebuild_unified
     unified = rebuild_unified(root, binding_report=result)
-    from .revision_pipeline import update_review_package
-    package = update_review_package(root)
+    package = None
+    if (root / "questions.json").is_file():
+        from .revision_pipeline import update_review_package
+        package = update_review_package(root)
     return {"unified": unified, "review_package": package,
             "revision": revision, "endpoints": len(verified),
             "edges": len(edges), "unresolved": len(unresolved),
