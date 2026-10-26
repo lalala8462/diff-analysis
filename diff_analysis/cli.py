@@ -23,6 +23,8 @@ from .semantic_evidence import collect_semantic_evidence
 from .incremental_review import recompute_review
 from .protocol_discovery import discover
 from .auto_evidence import auto_evidence
+from .contract_context import discover_contract_context
+from .unified_pipeline import rebuild_unified
 from .java_classpath import load_classpaths, for_project
 
 
@@ -113,6 +115,14 @@ def parser():
         job.add_argument('--file', required=True, help=schema + ' JSON input')
         job.add_argument('--repo', action='append', required=True,
                          help='Repeat PROJECT=LOCAL_GIT_REPO')
+    context = sub.add_parser('contract-context',
+                             help='Find changed-field and branch clues in impacted Java methods')
+    context.add_argument('--run-dir', required=True)
+    context.add_argument('--repo', action='append', required=True,
+                         help='PROJECT=LOCAL_GIT_REPO')
+    unified = sub.add_parser('rebuild-unified',
+                             help='Recompute versioned unified protocol/Java impact graph')
+    unified.add_argument('--run-dir', required=True)
     auto = sub.add_parser('auto-evidence',
                           help='Auto-plan pinned full methods and API/DTO files for review questions')
     auto.add_argument('--run-dir', required=True)
@@ -134,12 +144,17 @@ def run(args):
     if args.command == 'wizard':
         wizard.run_wizard(args)
         return
+    if args.command == 'rebuild-unified':
+        outcome = rebuild_unified(args.run_dir)
+        print('Unified graph:', json.dumps(outcome, ensure_ascii=False))
+        return
     if args.command == 'recompute-review':
         outcome = recompute_review(args.run_dir)
         print('Revision propagation:', json.dumps(outcome, ensure_ascii=False))
         return
     if args.command in ('bind-connections', 'semantic-evidence',
-                        'discover-connections', 'auto-evidence'):
+                        'discover-connections', 'auto-evidence',
+                        'contract-context'):
         repos = {}
         for pair in args.repo:
             project, sep, path = pair.partition('=')
@@ -148,6 +163,8 @@ def run(args):
             repos[project] = path
         if args.command == 'discover-connections':
             outcome = discover(args.run_dir, repos)
+        elif args.command == 'contract-context':
+            outcome = discover_contract_context(args.run_dir, repos)
         elif args.command == 'auto-evidence':
             outcome = auto_evidence(args.run_dir, repos)
         else:
