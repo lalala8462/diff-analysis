@@ -146,7 +146,10 @@ def run(args):
         return
     if args.command == 'rebuild-unified':
         outcome = rebuild_unified(args.run_dir)
+        from .revision_pipeline import update_review_package
+        package = update_review_package(args.run_dir)
         print('Unified graph:', json.dumps(outcome, ensure_ascii=False))
+        print('Updated review:', json.dumps(package, ensure_ascii=False))
         return
     if args.command == 'recompute-review':
         outcome = recompute_review(args.run_dir)
