@@ -185,7 +185,12 @@ def recompute_review(run_dir):
     }
     _write_json(folder / ("recomputed-%03d.json" % revnum), result)
     _write_json(root / "recomputed_latest.json", result)
-    return {"revision": revnum, "impact_findings": len(impacts),
+    # Recompute unified cross-project links from the same ReviewUnit overlay.
+    # Do not assume a particular protocol binding is deployed.
+    from .unified_pipeline import rebuild_unified
+    unified = rebuild_unified(root, units=by_diff,
+                              affected=set(revision["affected_group_ids"]))
+    return {"unified": unified, "revision": revnum, "impact_findings": len(impacts),
             "direct_group_checks": len(checks),
             "recomputed_groups": recomputed,
             "reused_groups": reused, "coverage_gaps": len(gaps),
