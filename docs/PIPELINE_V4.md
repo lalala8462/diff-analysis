@@ -363,7 +363,7 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 | P1-C | 审核问题、差异双端代码窗口、证据清单、范围／轮次／字节受限补证、增量文件和无进展停止 | 方法／契约自动扩展与精确必需证据检查、复杂绑定取证和大型分卷 |
 | P2-A | 人工 ExpectedGoal／RulePoint、HUMAN／AI 独立评审结论、结构引用校验、依据复核记录、目标／证据变更后的定向失效 | 外部 AI 的真实阅读范围无法自动确认；内容是否支持结论需要独立人工核实 |
 | P2-B | KEEP／JOINT_REVIEW 候选建议、Hunk 新版行细分、人工拆组／移动／合组、未分配单元与需重审标记 | 基于语义的 SPLIT／MERGE 自动建议、精确旧版子范围、修改后局部图增量重算 |
-| 持续验收 | 本地 Git 构造用例、失败／角色／图传播／补证与人工拆组／合组测试已编写 | Windows/JDK 8/17、真实 RefactoringMiner/GitLab、预标注误报率及 L 档压测未执行 |
+| 持续验收 | 本地 Git 构造用例、失败／角色／图传播／补证与人工拆组／合组测试已编写 | Windows/Linux JDK 8、真实 RefactoringMiner/GitLab、预标注误报率及 L 档压测未执行 |
 
 `analysis.json` 保留底账；`review_state.json` 和 `revisions/` 记录独立修订，不反向覆盖原 Git 事实。新增命令与输入示例以 [Windows 指南](WINDOWS_SETUP.md) 为准。
 
@@ -373,7 +373,14 @@ SQLite 计划存批次、修订和评审记录；大块原始代码、离线证�
 - **协议**：`protocol_discovery.py` 从固定 Git 版本只读提取 Dubbo/HTTP/MQ/数据库代码线索，不能直接构图连边；`connection_bindings.py` 校验两端精确协议身份、同侧版本、源码 blob/行号、可见标识和用户声明的环境/服务配置。输出是 `USER_ATTESTED_MATCH` 或 `BINDING_UNCONFIRMED`，不是运行时确认连接。真实链路必须使用实际部署配置与运行追踪另行验收。
 - **证据**：`semantic_evidence.py` 依据 `relations.graphs[].method_index` 提取单个完整方法；契约按固定 SHA 提取全文件；`auto_evidence.py` 从问题自动选取已索引方法和已知 API/DTO 契约，无法定位的对象登记遗漏，不接受自动猜测大型文件或不明方法。共享原补证轮次和字节预算，生成不覆盖原始清单的最新证据修订；取证失败／过大单独记录。
 - **人工修订**：`incremental_review.py` 以最后一次 ReviewUnit 归属为来源标签，复用 BASE／HEAD 关系边，对受影响组重新传播，缓存未受影响组，重新形成直接交叉候选、消费者与问题。BASE 子行无明示映射时留 `OLD_UNIT_RANGE_NOT_PROVEN`，不生成假证据。只重算静态受影响传播；不能据此声称完整 Java 语义、业务正确性或运行时依赖已核实。
-- 本轮新加 15 项单元用例；需补 JDK 8/17、GitLab、真实 Dubbo 2.6.x、Spring 动态绑定、多模块 classpath 与目标平台大规模样本验证。**当前 CI 尚未成功执行测试步骤。**
+- 本轮新加 15 项单元用例；需补 JDK 8（Windows/Linux）、GitLab、真实 Dubbo 2.6.x、Spring 动态绑定、多模块 classpath 与目标平台大规模样本验证。**当前 CI 尚未成功执行测试步骤。**
+
+### 2026-10-26：01—03 开发状态及精度边界
+
+- 统一关系图 `unified_graph.py` 采用 `method|side|project|sha|symbol` 与 `endpoint|side|project|sha|id` 作为版本节点。Java 直接调用和按固定源码位置锚定的协议端点建立方向明确的边，协议绑定导入后向上遍历跨项目消费者，不混合 BASE/HEAD，保留可信度、证据与 omissions。
+- `contract_context.py` 从最终变更行提取有限的字段/状态标识，只搜索图中受影响方法和本次修改的 DTO／枚举／MyBatis XML／SQL 文件；关联消费者的条件分支提供具体固定版本行号。此为有出处的词法候选，不能误写成完整字段数据流验证。
+- `revision_pipeline.py` 将 ReviewUnit 范围、各组关系路径、人工确认的 ExpectedGoal 修订构成对象级指纹。人工拆合组和绑定输入更新后只重新传播受影响来源组，重新生成问题及必要证据计划；已有证据的充分性独立标记 `NOT_ASSESSED`。目标修订只重审原先依赖目标的对象。
+- 阶段代码与报告保留缺口，原始净差异不改写；尚未实现真实运行时绑定、任意框架动态调用分析或 SQL 字段数据流精确证明。测试集中仅保留 JDK 8 Windows/Linux；新增 9 项用例，均待执行验证。
 
 ## 10. 实施顺序与工具引入
 
