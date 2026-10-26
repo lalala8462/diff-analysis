@@ -52,12 +52,11 @@ def rebuild_unified(run_dir, binding_report=None, units=None, affected=None):
     root, release = load_batch(run_dir)
     if binding_report is None:
         binding_report = _bindings(root)
-    revision = None
-    if units is None:
-        state = _state(root)
-        if state["group_revisions"]:
-            entry = state["group_revisions"][-1]
-            units, revision = entry["units"], entry["revision"]
+    state = _state(root)
+    latest = state["group_revisions"][-1] if state["group_revisions"] else None
+    revision = latest["revision"] if latest else None
+    if units is None and latest is not None:
+        units = latest["units"]
     graph = build_unified_graph(release, binding_report, units=units)
     previous_graph_file = root / "unified_graph_latest.json"
     previous_graph = (json.loads(previous_graph_file.read_text("utf-8"))
