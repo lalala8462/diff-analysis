@@ -86,8 +86,28 @@ def auto_evidence(run_dir, repos):
             else:
                 omissions.append({"question_id": qid, "project": project,
                                   "reason": "CONSUMER_METHOD_OR_VERSION_UNCONFIRMED"})
+    # Scan only pinned methods connected to the changed groups; lexical
+    # branch/field matches are hints, not a new dependency proof.
+    from .contract_context import discover_contract_context
+    context_stats = discover_contract_context(root, repos)
+    ctx = json.loads((root / "contract_context_latest.json").read_text("utf-8"))
+    questions_by_group = {}
+    for question in questions.get("questions", []):
+        for group in question.get("group_ids", []):
+            questions_by_group.setdefault(group, []).append(question["id"])
+    for hit in ctx["facts"]:
+        if hit["kind"] not in ("DECISION_BRANCH", "FIELD_DECLARATION",
+                               "SQL_REFERENCE", "ENUM_OR_CONSTANT_USE"):
+            continue
+        graph = graphs.get((hit["project"], hit["side"], hit["sha"]))
+        if not graph or hit["symbol"] not in graph.get("method_index", {}):
+            continue
+        for qid in questions_by_group.get(hit["group_id"], []):
+            register(qid, "METHOD", hit["project"], hit["sha"],
+                     hit["side"], symbol=hit["symbol"])
     plan = {"schema_version": "semantic-evidence-v1", "selectors": selectors,
-            "omissions": omissions,
+            "omissions": omissions + ctx["omissions"],
+            "context_facts": context_stats["facts"],
             "policy": "Only AST-indexed methods and known API/DTO file suffixes; "
                       "max 50 selectors and shared supplement budget"}
     _write_json(root / "auto_evidence_plan.json", plan)
