@@ -1,5 +1,15 @@
 # 变更记录
 
+## 2026-10-26 10:22:21 +08:00 — JDK 8 单版本 + 统一图/契约字段/修订增量（尚待执行测试）
+
+- JDK 支持目标收敛为 **8**；`.github/workflows/ci.yml` 使用 Temurin 8 的 Windows／Ubuntu 两平台，移除 JDK 17 验证项。
+- `unified_graph.py`、`unified_pipeline.py`：版本化 method/endpoint 节点，Java 与 Dubbo、HTTP、MQ、数据库连接边统一进入向上追踪图；缺少方法锚点或 SHA 不匹配显式留缺口，人工声明不当作运行时事实。
+- `contract_context.py`：差异标识定位固定版本内的消费者判断分支、DTO 字段、枚举、MyBatis XML 和 SQL 线索；`auto-evidence` 将关联方法／契约加入受限补证计划。
+- `revision_pipeline.py`：以 Group/ReviewUnit、目标修订及局部影响边为指纹，只更新受影响的问题、证据需求和判断适用性；跨项目绑定导入、人工改组及目标修订均接入派生重算。
+- 新增 9 项定向回归测试（5 统一图、2 增量方案、2 契约证据），预计累计 101 项。**仍未实际运行成功**；GitHub Actions 在工作流程步骤启动前失败，不能声称这些改动已通过 JDK 8 或业务集成测试。
+- 继续保留同一个 Draft PR，未合并 main；不运行被分析项目的构建或脚本。
+
+
 ## 2026-10-24 09:10:44 +08:00 — Java 类型归属、跨系统版本绑定、完整证据与增量重算（未验收）
 
 - Java Scanner 从原有名称／参数数量启发式升级为 javac 符号归属：精确区分同参数数量重载、继承目标及不确定情况；补充按项目和 BASE／HEAD 固定 SHA 的本地 JAR SHA-256 类路径清单，不运行 Maven/Gradle。
