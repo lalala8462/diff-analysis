@@ -210,6 +210,13 @@ def import_review(run_dir, payload):
             extra = json.loads(derived.read_text("utf-8"))
             if extra.get("revision") == latest_group["revision"]:
                 questions["questions"] = extra["questions"]
+    latest_questions = root / "review_package_latest.json"
+    if latest_questions.is_file():
+        current = json.loads(latest_questions.read_text("utf-8"))
+        questions["questions"] = current["questions"]
+        current_scope_fingerprint = _hash([
+            current_scope_fingerprint,
+            [(q["id"], q.get("dependency_fingerprint")) for q in current["questions"]]])
     valid = {"QUESTION": {q["id"] for q in questions["questions"]},
              "GROUP": group_ids,
              "DIFF": {c["id"] for l in release["ledgers"]
