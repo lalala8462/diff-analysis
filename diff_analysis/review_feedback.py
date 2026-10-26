@@ -260,6 +260,10 @@ def review_status(run_dir):
                         if d["id"] in rev["decisions_needing_review"] and
                         d.get("created_at_utc", "") <= rev["created_at_utc"])
     superseded_goals = state.get("goal_revision_events", [])
+    review_package = root / "review_package_latest.json"
+    if review_package.is_file():
+        package = json.loads(review_package.read_text(encoding="utf-8"))
+        affected.update(package.get("decisions_to_revalidate", []))
     evidence = _load_supplement_state(root)["evidence"]
     for decision in state["decisions"]:
         if any(decision.get("expected_goal_id") == event["old_goal_id"]
