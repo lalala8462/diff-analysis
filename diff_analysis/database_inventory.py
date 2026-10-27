@@ -283,19 +283,31 @@ def analyze_table_impacts(entries, ledgers, cache_dir):
                         if change["id"] not in item["change_ids"]:
                             item["change_ids"].append(change["id"])
                         source_use = {**changed, "sha": snap["sha"], "side": side}
-                        if (source_use not in item["producer_uses"]
-                                and len(item["producer_uses"]) < MAX_USES_PER_IMPACT):
-                            item["producer_uses"].append(source_use)
+                        if source_use not in item["producer_uses"]:
+                            if len(item["producer_uses"]) < MAX_USES_PER_IMPACT:
+                                item["producer_uses"].append(source_use)
+                            else:
+                                item["producer_uses_truncated"] = True
                         use = {**used, "sha": consumer_sha}
-                        if (use not in item["consumer_uses"]
-                                and len(item["consumer_uses"]) < MAX_USES_PER_IMPACT):
-                            item["consumer_uses"].append(use)
+                        if use not in item["consumer_uses"]:
+                            if len(item["consumer_uses"]) < MAX_USES_PER_IMPACT:
+                                item["consumer_uses"].append(use)
+                            else:
+                                item["consumer_uses_truncated"] = True
                         if (changed.get("datasource_hint") and used.get("datasource_hint")
                                 and changed["datasource_hint"] != used["datasource_hint"]):
                             item["status"] = "DATASOURCE_HINTS_DIFFER_UNCONFIRMED"
                         if ("." in changed["table"] and "." in used["table"]
                                 and changed["table"] != used["table"]):
                             item["status"] = "SCHEMA_HINTS_DIFFER_UNCONFIRMED"
+    for group in groups.values():
+        for field in ("producer_uses", "consumer_uses"):
+            if group.get(field + "_truncated"):
+                gaps.append({"project": group["producer_project"],
+                             "consumer_project": group["consumer_project"],
+                             "table": group["table"],
+                             "reason": "TABLE_EVIDENCE_LOCATIONS_TRUNCATED",
+                             "field": field, "max_locations": MAX_USES_PER_IMPACT})
     return {
         "schema_version": "table-impact-v1",
         "impacts": [groups[key] for key in sorted(groups)],

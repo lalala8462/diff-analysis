@@ -38,6 +38,16 @@ def delta(path, base, head, diff_id="D-1", line=1):
 
 
 class SharedResourcesTests(unittest.TestCase):
+    def test_cache_without_explicit_key_is_prefix_only(self):
+        src = '@Cacheable(cacheNames = "policy")\npublic String fetch(String id) { return ""; }'
+        uses, gaps = extract_resources(src, "Service.java")
+        candidates = [item for item in uses if item["kind"] == "REDIS_KEY"]
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("policy::", candidates[0]["resource"])
+        self.assertFalse(candidates[0]["exact"])
+        self.assertTrue(any(g["reason"] == "CACHE_KEY_GENERATED_UNRESOLVED"
+                            for g in gaps))
+
     def test_redis_literal_constant_prefix_and_dynamic_gaps(self):
         java = '''class App {
   static final String PREFIX = "policy:";

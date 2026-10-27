@@ -200,6 +200,12 @@ ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和�
 
 **仍有风险**：Java SQL 字符串拼接、MyBatis 动态 SQL、SDK 重载及跨项目实际 Maven 依赖、Redis 操作对象的值类型推断、反射名称拼接和容器绑定，都存在静态误报/漏报。生产部署的数据库实例和缓存实例未经验证；同名仅可作为候选。对实际 ADPTS/WebAPI 表访问、SPMS/WebAPI Redis 使用、消费者固定 SHA 的端到端验收仍须以真实仓库运行结果判定。
 
+## 四阶段审查补充：扫描结果完整性
+
+审查发现并修复 Spring Cache 没有显式 Key 时被错误标记为精确键的风险。现在这类注解只输出 Key 命名空间前缀，并记录 `CACHE_KEY_GENERATED_UNRESOLVED`；增加对应回归用例。数据库与共享资源候选达到单关联证据上限时，会显式记录 `TABLE_EVIDENCE_LOCATIONS_TRUNCATED` / `RESOURCE_EVIDENCE_LOCATIONS_TRUNCATED`，防止用户把截断的使用位置误认为完整清单。
+
+这些修复不提升静态规则到运行时精确绑定。真实项目测试、完整 unittest/JDK 8 CI 仍未成功验证，不能声称四阶段已经通过全面验收。
+
 ## 验证与限制
 
 - 当前支持 JDK 8 的静态分析；反射、动态代理、外部父 POM、真实数据源/缓存实例和跨服务部署关系仍可能无法解析。报告和索引均须披露未分析范围。

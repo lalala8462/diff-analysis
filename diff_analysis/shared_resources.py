@@ -15,7 +15,7 @@ from .gitops import git
 from .source_index import source_snapshot_index
 from .sdk_contracts import declarations
 
-RULES_VERSION = "shared-resources-v3"
+RULES_VERSION = "shared-resources-v4"
 MAX_FILES = 3500
 MAX_BYTES = 16_000_000
 MAX_FILE_BYTES = 350_000
@@ -173,15 +173,19 @@ def extract_resources(text, path):
             raw = (key.group(1) if key else "")
             literal = re.match(r"\s*'([^']+)'", raw)
             prefix = val.group(1) + "::" + (literal.group(1) if literal else "")
-            exact = not raw or (literal is not None and raw.strip() == "'" + literal.group(1) + "'")
+            # No explicit key invokes Spring's key generator. A cache name
+            # alone is a namespace clue, never an exact Redis key.
+            exact = bool(key and literal is not None and
+                         raw.strip() == "'" + literal.group(1) + "'")
             role = ("DELETE" if annotation.lower() == "cacheevict"
                     else "READ_WRITE" if annotation.lower() == "cacheable" else "WRITE")
             found.append(_observation("REDIS_KEY", role, prefix, exact, path, text,
                                       match.start(), match.end(), annotation,
                                       datasource, expression=attributes[:160]))
-            if key and not exact:
+            if not exact:
                 gaps.append({"path": path, "line": _line(text, match.start()),
-                             "reason": "SPEL_CACHE_KEY_PREFIX_ONLY"})
+                             "reason": ("CACHE_KEY_GENERATED_UNRESOLVED" if not key
+                                        else "SPEL_CACHE_KEY_PREFIX_ONLY")})
         pkg = PACKAGE.search(visible)
         for match in CLASS.finditer(masked):
             name = match.group(1)
@@ -382,11 +386,17 @@ def analyze_shared_resources(entries, ledgers, cache_dir):
                         if diff["id"] not in group["change_ids"]:
                             group["change_ids"].append(diff["id"])
                         loc = {**source, "side": side, "sha": snapshot["sha"]}
-                        if loc not in group["source_uses"] and len(group["source_uses"]) < MAX_USES_PER_IMPACT:
-                            group["source_uses"].append(loc)
+                        if loc not in group["source_uses"]:
+                            if len(group["source_uses"]) < MAX_USES_PER_IMPACT:
+                                group["source_uses"].append(loc)
+                            else:
+                                group["source_uses_truncated"] = True
                         matched = {**use, "sha": consumer_sha}
-                        if matched not in group["consumer_uses"] and len(group["consumer_uses"]) < MAX_USES_PER_IMPACT:
-                            group["consumer_uses"].append(matched)
+                        if matched not in group["consumer_uses"]:
+                            if len(group["consumer_uses"]) < MAX_USES_PER_IMPACT:
+                                group["consumer_uses"].append(matched)
+                            else:
+                                group["consumer_uses_truncated"] = True
                         if not source["exact"] or not use["exact"]:
                             group["status"] = "DYNAMIC_PREFIX_ONLY_UNCONFIRMED"
                         if (source["kind"] == "REDIS_KEY" and source.get("datasource_hint")
@@ -500,6 +510,14 @@ def analyze_shared_resources(entries, ledgers, cache_dir):
                         usage = {**read, "sha": consumer_sha}
                         if usage not in group["consumer_uses"]:
                             group["consumer_uses"].append(usage)
+    for key, group in grouped.items():
+        for field in ("source_uses", "consumer_uses"):
+            if group.get(field + "_truncated"):
+                gaps.append({"project": group["producer_project"],
+                             "consumer_project": group["consumer_project"],
+                             "resource": group["resource"],
+                             "reason": "RESOURCE_EVIDENCE_LOCATIONS_TRUNCATED",
+                             "field": field, "max_locations": MAX_USES_PER_IMPACT})
     return {"schema_version": "shared-impact-v1",
             "impacts": [grouped[key] for key in sorted(grouped)],
             "omissions": gaps, "cache": {"hits": hits, "builds": builds},
