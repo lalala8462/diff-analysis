@@ -173,6 +173,11 @@ class ExtractReviewTests(unittest.TestCase):
 
 
 class MixedCommitTests(unittest.TestCase):
+    def setUp(self):
+        mock = patch('diff_analysis.maven_inventory.default_projects', return_value=([], []))
+        mock.start()
+        self.addCleanup(mock.stop)
+
     def _example(self, temp):
         repo = init(temp)
         put(repo, "A.java",
@@ -191,7 +196,8 @@ class MixedCommitTests(unittest.TestCase):
             ledger = final_diff_ledger(repo, "rhf/pay", base, head)
             self.assertEqual(2, len(ledger["final_changes"]))
             original, _ = candidate_groups([ledger])
-            self.assertEqual(2, len(original))
+            self.assertEqual(1, len(original))
+            self.assertEqual('PAY-123', original[0]['issue_key'])
             decisions = [
                 {"diff_id": ledger["final_changes"][0]["id"],
                  "issue_keys": ["PAY-123"], "reason": "Approved payment ticket"},

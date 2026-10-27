@@ -9,6 +9,16 @@ from .release_analysis import assemble_release, final_diff_ledger
 from .review_workflow import export_questions
 
 
+DEFAULT_RUN_ROOT = Path(__file__).resolve().parent.parent / '.diff-analysis' / 'runs'
+def resolve_run_root(value=None):
+    """所有新评审目录均位于项目的 runs 目录下。"""
+    allowed = DEFAULT_RUN_ROOT.resolve()
+    target = Path(value).expanduser().resolve() if value is not None else allowed
+    if target != allowed and allowed not in target.parents:
+        raise ValueError('运行目录必须位于 ' + str(allowed) + ' 下')
+    return target
+
+
 def _code_lines(lines):
     if not lines:
         return "_此侧没有可展示的文本片段（删除、新增、二进制或文件不可读）。_\n"
@@ -245,7 +255,7 @@ def start_ledger_checkpoint(specs, run_root, roles=None):
 def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                          refactoringminer_bin=None, codetracker_evidence=None,
                          attribution_rules=None, checkpoint=None,
-                         scan_failures=None):
+                         scan_failures=None, project_registry=None, comparisons=None):
     """Generate offline reports; a pre-saved checkpoint survives scan failures."""
     root = (Path(checkpoint["root"]) if checkpoint is not None else None)
     manifest = checkpoint["manifest"] if checkpoint is not None else None
@@ -259,6 +269,8 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         codetracker_evidence=codetracker_evidence,
         attribution_rules=attribution_rules,
         precomputed_ledgers=manifest["ledgers"] if manifest is not None else None)
+    if comparisons is not None:
+        release['comparisons'] = comparisons
     scan_failures = list(scan_failures or [])
     if manifest is not None:
         keys = {(r["project"], r["base"], r["head"]): r for r in reviews}
@@ -381,11 +393,16 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         "| 项目 | 角色 | 旧版 SHA | 新版 SHA | 最终差异数 | 提交历史状态 |",
         "| --- | --- | --- | --- | ---: | --- |"
     ]
+    versions = {c['project']: c for c in (comparisons or [])}
     for led in release["ledgers"]:
         summary.append("| %s | %s | %s | %s | %d | %s |" %
                        (led["project"], led.get("role", "CHANGE"),
                         led["base"][:12], led["head"][:12],
                         len(led["final_changes"]), led["history"]["status"]))
+    if versions:
+        summary.extend(['', '### 输入的版本标签', ''])
+        for project, version in versions.items():
+            summary.append('- %s：%s → %s' % (project, version['old_version'], version['new_version']))
     if manifest is not None:
         summary += ["", "## 项目阶段覆盖（失败不代表无影响）", "",
                     "| 项目 | Git 净差异底账 | Java 静态扫描 |",
@@ -499,8 +516,33 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                  "不得因为未输入全部组而声称全面评审。", ""]
     (root / "ai_review.md").write_text("\n".join(ai_lines), encoding="utf-8")
 
+    try:
+        from .human_report import write_html
+        dependency_scope = write_html(root, release, specs, reviews, project_registry)
+        scope_summary = {'projects': dependency_scope['projects'], 'gaps': dependency_scope['gaps'],
+                         'sdk_candidates': len(dependency_scope['sdks']),
+                         'alerts': len(dependency_scope['alerts']),
+                         'human_priority_count': dependency_scope['human_priority_count']}
+        (root / 'dependency_scope.json').write_text(
+            json.dumps(scope_summary, ensure_ascii=False, indent=2), encoding='utf-8')
+        if manifest is not None:
+            stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json'])
+            stage_manifest['dependency_scan'] = {
+                'status': 'PARTIAL' if scope_summary['gaps'] else 'COMPLETE',
+                'output_ref': 'dependency_scope.json',
+                'gap_count': len(scope_summary['gaps'])}
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        failure = {"project": "(batch)", "stage": "HUMAN_HTML",
+                   "error_type": type(exc).__name__, "reason": str(exc)[:500]}
+        release.setdefault("stage_failures", []).append(failure)
+        release["status"] = "PARTIAL_EVIDENCE"
+        (root / "analysis.json").write_text(json.dumps(release, ensure_ascii=False, indent=2), encoding="utf-8")
+        if manifest is not None:
+            stage_manifest["failures"] = release["stage_failures"]
+            stage_manifest["state"] = "PARTIAL"
+
     if manifest is not None:
-        stage_manifest["report_stage"]["status"] = "COMPLETE"
+        stage_manifest["report_stage"]["status"] = "PARTIAL" if any(f.get('stage') == 'HUMAN_HTML' for f in release.get('stage_failures', [])) else "COMPLETE"
         stage_manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
         temp.write_text(json.dumps(stage_manifest, ensure_ascii=False, indent=2),
                         encoding="utf-8")

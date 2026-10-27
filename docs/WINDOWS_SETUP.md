@@ -105,7 +105,9 @@ Remove-Item Env:\GITLAB_TOKEN -ErrorAction SilentlyContinue
 
 ## 3. 运行目录及失败恢复
 
-默认每次在 .diff-analysis/runs/ 创建 UTC 时间＋随机标识的独立目录。命令支持 --run-root。重点文件：
+默认每次在项目的 .diff-analysis/runs/ 创建 UTC 时间＋随机标识的独立目录；`--run-root` 只能指定该目录内的子目录。重点文件：
+
+向导和比较命令只在本次独立运行目录生成报告与证据；使用 `report.html`、`report.md` 和 `analysis.json` 查看结果。
 
 | 路径 | 内容 |
 | --- | --- |

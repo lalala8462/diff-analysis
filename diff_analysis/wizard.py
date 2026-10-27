@@ -2,7 +2,6 @@
 
 Wizard gathers and confirms inputs before touching the catalog or producing reports.
 """
-import json
 import os
 import re
 import subprocess
@@ -17,8 +16,9 @@ from .gitops import check_sha, GitError
 from .scanner import ScannerError
 from .java_classpath import load_classpaths, for_project
 from .review import review_repo, stitch_cross_project
-from .report import markdown
-from .release_report import write_release_bundle, start_ledger_checkpoint
+from .release_report import (write_release_bundle, start_ledger_checkpoint,
+                             resolve_run_root)
+from .architecture_sources import isolate_specs, mr_copy_path, SourceError
 
 
 class WizardCancelled(Exception):
@@ -133,6 +133,7 @@ def _register_project(store, item):
 
 def run_wizard(args, input_fn=input, output_fn=print):
     """Interactive path; reports may be rerun from the pinned SHA in JSON."""
+    run_root = resolve_run_root(getattr(args, 'run_root', None))
     output_fn("=== diff-analysis 多项目版本比较向导 ===")
     output_fn("支持本地 Git 分支/Tag/SHA，也支持未合并的 GitLab MR。输入 q 随时取消。")
     items = []
@@ -188,7 +189,7 @@ def run_wizard(args, input_fn=input, output_fn=print):
         with tempfile.TemporaryDirectory(prefix="diff-wizard-") as tmp:
             root = Path(tmp)
             cache = root / "javac"
-            results, specs, comparisons, meta, scan_failures = [], [], [], {}, []
+            results, specs, comparisons, scan_failures = [], [], [], []
             usable_items = []
             # Prepare Git project identities independently. No Java scanner runs yet.
             for i, item in enumerate(items):
@@ -198,6 +199,11 @@ def run_wizard(args, input_fn=input, output_fn=print):
                     if item["kind"] == "local":
                         repo = item["repo"]
                         base, head = item["base"], item["head"]
+                        isolated, failures, active = isolate_specs([(repo, project, base, head)])
+                        if active:
+                            if failures:
+                                raise SourceError(failures[0]['reason'])
+                            repo = isolated[0][0]
                     else:
                         live = get_mr(item["mr_url"], item["host"], token)
                         if (live["head"] != item["head"] or
@@ -207,19 +213,22 @@ def run_wizard(args, input_fn=input, output_fn=print):
                                 "MR_CHANGED: confirmation invalidated by MR update")
                         if target_branch_sha(live, token) != item["base"].lower():
                             raise BaselineError("TARGET_MOVED: MR target version changed")
-                        repo = clone_mr(live, root / ("clone-%d" % i), token)
+                        repo = clone_mr(live, mr_copy_path(project), token)
                         base, head = live["start"], live["head"]
-                        meta[project] = {"url": live["url"], "head": head}
+                        isolated, failures, active = isolate_specs([(repo, project, base, head)])
+                        if active:
+                            if failures:
+                                raise SourceError(failures[0]['reason'])
+                            repo = isolated[0][0]
                         item["_diff_base"] = live["base"]
                     usable_items.append((i, item, repo, base, head))
                     specs.append((repo, project, base, head))
-                except (BaselineError, GitError, OSError, ValueError) as exc:
+                except (BaselineError, GitError, OSError, ValueError, SourceError) as exc:
                     scan_failures.append({
                         "project": project, "base": item["base"],
                         "head": item["head"], "stage": "PREPARE",
                         "error_type": type(exc).__name__, "reason": str(exc)[:500]})
                     output_fn("项目准备失败 %s：%s" % (project, exc))
-            run_root = getattr(args, "run_root", ".diff-analysis/runs")
             roles = {(i["project"], base, head): i.get("role", "CHANGE")
                      for _, i, _, base, head in usable_items}
             bundle_root, checkpoint = start_ledger_checkpoint(specs, run_root, roles)
@@ -288,44 +297,20 @@ def run_wizard(args, input_fn=input, output_fn=print):
                                          else "LOCAL_COMMIT_COMPARE_NOT_PROMOTED")
                 })
             candidates = stitch_cross_project(results)
-            report = markdown(results, candidates, meta)
-            version_lines = [
-                "## 本次输入的项目及修订号", "",
-                "| 项目 | 旧版本 (固定 SHA) | 新版本 (固定 SHA) | 模式 |",
-                "| --- | --- | --- | --- |"
-            ]
-            for item in comparisons:
-                version_lines.append(
-                    "| `%s` | %s (`%s`) | %s (`%s`) | %s |" %
-                    (item["project"], item["old_version"], item["base_sha"][:12],
-                     item["new_version"], item["head_sha"][:12], item["origin"]))
-            report = report.replace(
-                "## 一、项目与版本",
-                "\n".join(version_lines) + "\n\n## 一、项目与版本", 1)
-            if scan_failures or checkpoint["failures"]:
-                report += "\n\n## 阶段失败\n\n部分项目未完成扫描，详见独立运行目录。\n"
-            dest = Path(args.output).expanduser().resolve()
-            output_json = Path(args.json_output).expanduser().resolve()
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            output_json.parent.mkdir(parents=True, exist_ok=True)
             bundle, _ = write_release_bundle(
                 specs, results, candidates, run_root, args.db,
                 refactoringminer_bin=getattr(args, "refactoringminer_bin", None),
                 codetracker_evidence=getattr(args, "codetracker_evidence", None),
                 attribution_rules=getattr(args, "attribution_rules", None),
                 checkpoint={"root": bundle_root, "manifest": checkpoint},
-                scan_failures=scan_failures)
-            # Legacy outputs are downstream of durable evidence.
-            dest.write_text(report, encoding="utf-8")
-            output_json.write_text(json.dumps({
-                "comparisons": comparisons, "catalog_revision": store.revision(),
-                "results": results, "cross_candidates": candidates,
-                "stage_failures": checkpoint["failures"] + scan_failures,
-                "warning": "Static candidates only; release versions not promoted."
-            }, ensure_ascii=False, indent=2), encoding="utf-8")
+                scan_failures=scan_failures,
+                project_registry=getattr(args, 'project_registry', None),
+                comparisons=comparisons)
     output_fn("\n新版候选需求与证据包：" + str(bundle))
+    if (bundle / 'report.html').exists():
+        output_fn("人工审核 HTML 报告：" + str(bundle / 'report.html'))
     output_fn("可交给本地 AI 的完整报告：" + str(bundle / "ai_review.md"))
-    output_fn("\n完成。Markdown 报告：" + str(dest))
-    output_fn("JSON 报告：" + str(output_json))
+    output_fn("\n完成。Markdown 报告：" + str(bundle / 'report.md'))
+    output_fn("JSON 报告：" + str(bundle / 'analysis.json'))
     output_fn("跨项目候选关联：%d 条（不是已证实业务依赖）" % len(candidates))
     return True

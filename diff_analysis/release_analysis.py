@@ -21,7 +21,6 @@ HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*$", re.M)
 ISSUE = re.compile(r"(?<![\w])([A-Z][A-Z0-9]{1,15}-[1-9]\d{0,8})(?![\w])")
 MAX_FILE_BYTES = 2_000_000
 MAX_HUNKS_PER_FILE = 1000
-MAX_COMMITS = 300
 SOURCE_CONTEXT = 30
 
 
@@ -86,8 +85,7 @@ def collect_commits(repo, base, head):
     raw = _decode(git(repo, "rev-list", "--topo-order", "--reverse",
                       "--parents", base + ".." + head))
     rows = raw.splitlines()
-    truncated = len(rows) > MAX_COMMITS
-    ids = [line.split()[0] for line in rows[:MAX_COMMITS]]
+    ids = [line.split()[0] for line in rows]
     commits = []
     for sha in ids:
         text = _decode(git(repo, "show", "-s",
@@ -98,8 +96,9 @@ def collect_commits(repo, base, head):
         parents = (fields[2] if len(fields) > 2 else "").split()
         commits.append({"sha": sha, "parents": parents,
                         "subject": subject, "body": body,
-                        "issue_keys": sorted(set(ISSUE.findall(subject + "\n" + body)))})
-    return {"status": "TRUNCATED" if truncated else "COMPLETE",
+                        "issue_keys": ([m.group(1)] if (m := re.match(
+                            r"^([A-Z][A-Z0-9]{1,15}-[1-9]\d{0,8})(?=$|[\s:：])", subject)) else [])})
+    return {"status": "COMPLETE",
             "commits": commits, "total": len(rows)}
 
 
@@ -111,7 +110,7 @@ def _file_commit_candidates(repo, base, head, paths, commit_lookup):
                           "--", *list(dict.fromkeys(paths))))
     except RuntimeError:
         return []
-    return [sha for sha in dict.fromkeys(raw.splitlines()) if sha in commit_lookup][:50]
+    return [sha for sha in dict.fromkeys(raw.splitlines()) if sha in commit_lookup]
 
 
 def _line_blame(repo, head, path, start, count, commits):

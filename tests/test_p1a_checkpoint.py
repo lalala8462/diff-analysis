@@ -7,9 +7,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from diff_analysis.cli import run
+from diff_analysis.cli import run, parser
 from diff_analysis.release_report import (start_ledger_checkpoint, write_release_bundle,
-                                          rebuild_from_checkpoint)
+                                          rebuild_from_checkpoint, resolve_run_root)
 from diff_analysis.release_analysis import final_diff_ledger, attach_review_to_ledger
 from diff_analysis.scanner import ScannerError
 
@@ -38,14 +38,21 @@ def sample_repo(root, name):
 
 
 class LedgerCheckpointTests(unittest.TestCase):
-    def test_checkpoint_survives_scanner_failure_and_legacy_output_has_warning(self):
+    def setUp(self):
+        mock = patch('diff_analysis.maven_inventory.default_projects', return_value=([], []))
+        mock.start()
+        self.addCleanup(mock.stop)
+        run_root = patch('diff_analysis.cli.resolve_run_root', side_effect=lambda path: Path(path).resolve())
+        run_root.start()
+        self.addCleanup(run_root.stop)
+
+    def test_checkpoint_survives_scanner_failure_and_report_has_warning(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             repo, base, head = sample_repo(root, "one")
             args = SimpleNamespace(
                 command="review-local", repo=str(repo), base=base, head=head,
                 project="demo/one", catalog=[], run_root=str(root / "runs"),
-                output=str(root / "legacy.md"), json_output=str(root / "legacy.json"),
                 db=str(root / "state.sqlite3"), refactoringminer_bin=None,
                 codetracker_evidence=None, attribution_rules=None)
             with patch("diff_analysis.cli.review_repo",
@@ -73,7 +80,43 @@ class LedgerCheckpointTests(unittest.TestCase):
             self.assertEqual("PARTIAL", stages["state"])
             self.assertEqual("COMPLETE", stages["report_stage"]["status"])
             self.assertIn("FAILED", (bundle / "report.md").read_text("utf-8"))
-            self.assertIn("部分扫描失败", Path(args.output).read_text("utf-8"))
+            self.assertIn('阶段覆盖', (bundle / 'report.md').read_text('utf-8'))
+            self.assertFalse((root / 'report.md').exists())
+
+    def test_report_uses_a_new_run_directory_each_time(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            repo, base, head = sample_repo(root, 'one')
+            args = SimpleNamespace(command='review-local', repo=str(repo), base=base, head=head,
+                                   project='demo/one', catalog=[], run_root=str(root / 'runs'),
+                                   db=str(root / 'state.sqlite3'),
+                                   refactoringminer_bin=None, codetracker_evidence=None, attribution_rules=None)
+            with patch('diff_analysis.cli.review_repo', side_effect=ScannerError('simulated')):
+                run(args)
+                run(args)
+            runs = list((root / 'runs').iterdir())
+            self.assertEqual(2, len(runs))
+            for bundle in runs:
+                self.assertTrue((bundle / 'report.md').is_file())
+                self.assertTrue((bundle / 'analysis.json').is_file())
+                self.assertFalse((bundle / 'legacy_report.md').exists())
+                self.assertFalse((bundle / 'review.json').exists())
+            self.assertFalse((root / 'report.md').exists())
+            self.assertFalse((root / 'review.json').exists())
+
+    def test_legacy_output_options_removed_and_run_root_is_restricted(self):
+        for flag in ('--output', '--json-output'):
+            with self.subTest(flag=flag), self.assertRaises(SystemExit), patch('sys.stderr'):
+                parser().parse_args(['wizard', flag, 'outside.md'])
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'runs'
+            with patch('diff_analysis.release_report.DEFAULT_RUN_ROOT', root):
+                self.assertEqual(root.resolve(), resolve_run_root())
+                self.assertEqual((root / 'batch').resolve(), resolve_run_root(root / 'batch'))
+                with self.assertRaises(ValueError):
+                    resolve_run_root(Path(folder))
+                with self.assertRaises(ValueError):
+                    resolve_run_root(root / '..' / 'elsewhere')
 
     def test_one_gitlab_mr_prepare_failure_keeps_other_git_ledger(self):
         from diff_analysis.gitlab import GitLabError
@@ -86,8 +129,7 @@ class LedgerCheckpointTests(unittest.TestCase):
                 command="review-mrs", mr=[bad, good],
                 allowed_host="gitlab.example.com", allow_http=False,
                 token_env="GITLAB_TOKEN", evidence=[], catalog=[],
-                run_root=str(root / "runs"), output=str(root / "legacy.md"),
-                json_output=str(root / "legacy.json"),
+                run_root=str(root / "runs"),
                 db=str(root / "state.sqlite3"), refactoringminer_bin=None,
                 codetracker_evidence=None, attribution_rules=None)
             good_mr = {"project": "team/good", "base": base, "head": head,

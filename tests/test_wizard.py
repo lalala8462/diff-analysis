@@ -48,6 +48,14 @@ def answers(seq):
 
 
 class WizardTests(unittest.TestCase):
+    def setUp(self):
+        mock = patch('diff_analysis.maven_inventory.default_projects', return_value=([], []))
+        mock.start()
+        self.addCleanup(mock.stop)
+        run_root = patch('diff_analysis.wizard.resolve_run_root', side_effect=lambda path: Path(path).resolve())
+        run_root.start()
+        self.addCleanup(run_root.stop)
+
     def test_git_tag_branch_sha_resolve(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, old, head = sample_repo(tmp, "project")
@@ -62,8 +70,7 @@ class WizardTests(unittest.TestCase):
             folder = Path(tmp)
             args = SimpleNamespace(
                 db=str(folder / "db.sqlite3"),
-                output=str(folder / "report.md"),
-                json_output=str(folder / "report.json"))
+                output=None, json_output=None, run_root=str(folder / 'runs'))
             responses = [
                 "1", str(one), "rhf/one", "V1.0", "V1.1", "", "", "",
                 "1", str(two), "rhf/two", "V1.0", "V1.1", "", "", "",
@@ -71,14 +78,19 @@ class WizardTests(unittest.TestCase):
             ]
             logs = []
             self.assertTrue(run_wizard(args, answers(responses), logs.append))
-            result = json.loads(Path(args.json_output).read_text(encoding="utf-8"))
+            runs = list((folder / 'runs').iterdir())
+            self.assertEqual(1, len(runs))
+            result = json.loads((runs[0] / 'analysis.json').read_text(encoding="utf-8"))
             self.assertEqual(2, len(result["comparisons"]))
             self.assertEqual(old1, result["comparisons"][0]["base_sha"])
             self.assertEqual(head1, result["comparisons"][0]["head_sha"])
             self.assertEqual(old2, result["comparisons"][1]["base_sha"])
             self.assertEqual(head2, result["comparisons"][1]["head_sha"])
-            self.assertIn("本次输入的项目及修订号",
-                          Path(args.output).read_text(encoding="utf-8"))
+            self.assertIn("输入的版本标签", (runs[0] / 'report.md').read_text(encoding="utf-8"))
+            self.assertFalse((runs[0] / 'legacy_report.md').exists())
+            self.assertFalse((runs[0] / 'review.json').exists())
+            self.assertFalse((folder / 'report.md').exists())
+            self.assertFalse((folder / 'review.json').exists())
             # The interactive route also writes a separate offline evidence bundle.
             # Its default run root is relative to the process working directory.
             self.assertTrue(any("新版候选需求与证据包" in line for line in logs))
@@ -94,21 +106,19 @@ class WizardTests(unittest.TestCase):
             repo, _, _ = sample_repo(tmp, "one")
             folder = Path(tmp)
             args = SimpleNamespace(db=str(folder / "db.sqlite3"),
-                                   output=str(folder / "report.md"),
-                                   json_output=str(folder / "report.json"))
+                                   output=None, json_output=None, run_root=str(folder / 'runs'))
             responses = ["1", str(repo), "rhf/one", "V1.0", "V1.1", "", "", "",
                          "0", "n"]
             self.assertFalse(run_wizard(args, answers(responses), lambda _: None))
             self.assertFalse(Path(args.db).exists())
-            self.assertFalse(Path(args.output).exists())
+            self.assertFalse((folder / 'runs').exists())
 
     def test_empty_owner_keeps_existing_value(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo, _, _ = sample_repo(tmp, "one")
             folder = Path(tmp)
             args = SimpleNamespace(db=str(folder / "db.sqlite3"),
-                                   output=str(folder / "report.md"),
-                                   json_output=str(folder / "report.json"))
+                                   output=None, json_output=None, run_root=str(folder / 'runs'))
             with CatalogStore(args.db) as store:
                 store.add_project("rhf/one", "original-team")
             responses = ["1", str(repo), "rhf/one", "V1.0", "V1.1", "", "", "",
@@ -126,8 +136,7 @@ class WizardTests(unittest.TestCase):
             repo, old, head = sample_repo(tmp, "one")
             folder = Path(tmp)
             args = SimpleNamespace(db=str(folder / "db.sqlite3"),
-                                   output=str(folder / "report.md"),
-                                   json_output=str(folder / "report.json"))
+                                   output=None, json_output=None, run_root=str(folder / 'runs'))
             url = "https://gitlab.example.cn/rhf/one/-/merge_requests/11"
             mr = {"project": "rhf/one", "url": url,
                   "state": "opened", "origin": "https://gitlab.example.cn",
@@ -150,8 +159,7 @@ class WizardTests(unittest.TestCase):
             root = Path(tmp)
             args = SimpleNamespace(
                 db=str(root / "catalog.sqlite3"),
-                output=str(root / "report.md"),
-                json_output=str(root / "report.json"),
+                output=None, json_output=None,
                 run_root=str(root / "runs"))
             responses = [
                 "3", str(repo), "team/consumer",
@@ -175,8 +183,7 @@ class WizardTests(unittest.TestCase):
             repo, _, _ = sample_repo(tmp, "one")
             folder = Path(tmp)
             args = SimpleNamespace(db=str(folder / "db.sqlite3"),
-                                   output=str(folder / "report.md"),
-                                   json_output=str(folder / "report.json"))
+                                   output=None, json_output=None, run_root=str(folder / 'runs'))
             # The invalid project is rejected, then q cancels the wizard.
             responses = ["1", str(repo), "rhf/one", "V1.0", "V1.0", "q"]
             lines = []

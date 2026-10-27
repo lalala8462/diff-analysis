@@ -37,6 +37,11 @@ def commit(repo, name, code, message):
 
 
 class ReleaseEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        mock = patch('diff_analysis.maven_inventory.default_projects', return_value=([], []))
+        mock.start()
+        self.addCleanup(mock.stop)
+
     def test_final_net_change_not_sum_of_intermediate_commits(self):
         with tempfile.TemporaryDirectory() as root:
             repo = setup(Path(root) / "repo")
@@ -65,7 +70,7 @@ class ReleaseEvidenceTests(unittest.TestCase):
             self.assertEqual(2, len(issue_groups["PAY-123"]["change_ids"]))
             self.assertEqual(1, len(issue_groups["PAY-124"]["change_ids"]))
 
-    def test_mixed_issue_commit_not_unconditionally_grouped(self):
+    def test_only_leading_issue_is_extracted(self):
         with tempfile.TemporaryDirectory() as root:
             repo = setup(Path(root) / "repo")
             base = commit(repo, "A.java", "class A {}\n", "base")
@@ -73,12 +78,11 @@ class ReleaseEvidenceTests(unittest.TestCase):
             head = commit(repo, "B.java", "class B { int b; }\n", "PAY-13 and PAY-14 mixed")
             evidence = final_diff_ledger(repo, "rhf/pay", base, head)
             groups, assigned = candidate_groups([evidence])
-            self.assertEqual(2, len(groups))
+            self.assertEqual(1, len(groups))
             self.assertEqual({c["id"] for c in evidence["final_changes"]}, set(assigned))
             for group in groups:
-                self.assertEqual("AMBIGUOUS_OR_UNASSIGNED", group["group_basis"])
-                self.assertIsNone(group["issue_key"])
-                self.assertEqual(1, len(group["change_ids"]))
+                self.assertEqual("PAY-13", group["issue_key"])
+                self.assertEqual(2, len(group["change_ids"]))
                 self.assertEqual("CANDIDATE", group["status"])
 
     def test_renamed_file_has_file_level_event(self):
