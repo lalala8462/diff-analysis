@@ -364,6 +364,7 @@ def write_html(root, release, specs, reviews, manifest=None):
             tickets.update(labels)
             allfiles.append((ledger, path, changes, labels))
     alerts = _group_sdk_alerts(sdk['alerts'])
+    contract_impacts = sdk.get('contract_impacts', [])
     ticket_groups = {}
     for ledger, path, changes, labels in allfiles:
         known = labels - {'EMPTY'}
@@ -382,7 +383,7 @@ def write_html(root, release, specs, reviews, manifest=None):
                 'evolution': _file_evolution(repos.get(project), ledger, path, changes),
                 'change_ids': [c['id'] for c in changes],
                 'attribution': ['%s：%s（%s）' % (c['id'], '、'.join(attribution(c)[0]) or '未归属', attribution(c)[1]) for c in changes]})
-    sdk['human_priority_count'] = len(alerts)
+    sdk['human_priority_count'] = len(alerts) + len(contract_impacts)
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
     out.append('<section><h2>比较范围与覆盖</h2>')
     versions = {item['project']: item for item in release.get('comparisons', [])}
@@ -480,8 +481,38 @@ def write_html(root, release, specs, reviews, manifest=None):
         if ids:
             out.append('<p>SDK 和代码变化证据：' + '　'.join(_evidence_link(i) for i in s.get('changes', []) + a.get('change_ids', [])) + '</p>')
         out.append('</article>')
-    if not alerts: out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
-    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>变化类引用 SDK：匹配源码 import，提示交叉核对，不证明运行调用。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
+    for finding in contract_impacts:
+        s = finding['sdk']
+        out.append('<article class="card alert"><b>SDK 契约与消费者项目：%s</b>'
+                   '<p>SDK %s / %s · %s:%s</p>'
+                   '<p>生产方 %s → %s；消费方固定版本 %s；声明依赖版本 %s</p>'
+                   '<p class="gap">静态类型作用域内的成员使用候选，不证明实际类型绑定、契约不兼容或生产部署。</p>' %
+                   (esc(finding['consumer']), esc(s['project']), esc(s['module']),
+                    esc(s['group']), esc(s['artifact']),
+                    esc((s.get('base_sha') or '')[:12]), esc((s.get('head_sha') or '')[:12]),
+                    esc((finding.get('consumer_head_sha') or '')[:12]),
+                    esc(str(finding.get('dependency_version') or '未知'))))
+        by_change = {}
+        for use in finding['uses']:
+            c = use['contract']
+            key = (c['path'], c['identity'], c['status'])
+            by_change.setdefault(key, []).append(use)
+        for (path, member, status), uses in sorted(by_change.items()):
+            c = uses[0]['contract']
+            out.append('<details><summary>%s · %s · %s（%d 处用法）</summary>' %
+                       (esc(path), esc(member), esc(status), len(uses)))
+            out.append('<p>原契约：%s；新契约：%s</p><p>生产方差异：%s</p>' %
+                       (esc(str((c['old'] or {}).get('signature') or '不存在')),
+                        esc(str((c['new'] or {}).get('signature') or '不存在')),
+                        ' '.join(_evidence_link(i) for i in c['change_ids'])))
+            for use in uses:
+                out.append('<p>%s:%d（%s） <code>%s</code></p>' %
+                           (esc(use['consumer_path']), use['line'],
+                            esc(use['binding_status']), esc(use['excerpt'])))
+            out.append('</details>')
+        out.append('<p>待确认：实际类型绑定、API 兼容性和是否需要调整消费者。</p></article>')
+    if not alerts and not contract_impacts: out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
+    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
     for project in sorted({l['project'] for l, _, _, _ in allfiles}): out.append('<option>' + esc(project) + '</option>')
     out.append('</select><select id="ticket" onchange="filter()"><option value="">全部工单</option>')

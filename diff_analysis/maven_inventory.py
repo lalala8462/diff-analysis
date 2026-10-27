@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .gitops import git, check_sha
 from .architecture_sources import default_projects, isolate_specs, source_name
+from .sdk_contracts import analyze_contract_uses
 
 
 def _text(node, name):
@@ -198,6 +199,9 @@ def analyze(specs, ledgers, manifest=None):
                    'base_sha': entries[project]['base'], 'head_sha': entries[project]['head'],
                    'new_version': newmods.get(module_path, {}).get('version'), 'changes': [c['id'] for c in changes],
                    'tickets': sorted({key for c in changes for key in (c.get('manual_attribution', {}).get('issue_keys', []) if c.get('manual_attribution') else c.get('line_issue_candidates', []) if c.get('line_commit_candidates') else c.get('issue_candidates', []))})}
+            sdk['java_change_paths'] = sorted({
+                path for c in changes for path in (c.get('path'), c.get('old_path'))
+                if path and path.endswith('.java')})
             sdks.append(sdk)
             if not sdk['group'] or not sdk['artifact']:
                 gaps.append(project + ' / ' + module['path'] + '：SDK 坐标不完整，无法匹配消费者')
@@ -252,28 +256,18 @@ def analyze(specs, ledgers, manifest=None):
                                    'consumer_context': {
                                        side: _dependency_context(entries[consumer]['repo'], entries[consumer][side], dep['path'], sdk['artifact'])
                                        for side in ('base', 'head')}})
-                paths = {c['path'] for c in led_by_project.get(consumer, {}).get('final_changes', []) if c['path'].endswith('.java')}
-                for path in paths:
-                    try:
-                        source = git(entries[consumer]['repo'], 'show', entries[consumer]['head'] + ':' + path).decode('utf-8', 'replace')
-                    except RuntimeError:
-                        continue
-                    imports = list(re.finditer(r'(?m)^[ \t]*import\s+(?:static\s+)?([\w.*]+)\s*;', source))
-                    matched = [m.group(1) + '（第 %d 行）' % (source.count('\n', 0, m.start()) + 1)
-                               for m in imports if m.group(1) in types or any(
-                                   m.group(1) == t.rsplit('.', 1)[0] + '.*' or m.group(1).startswith(t + '.') for t in types)]
-                    if matched:
-                        cc = [c for c in led_by_project.get(consumer, {}).get('final_changes', []) if c['path'] == path]
-                        ctickets = sorted({key for c in cc for key in (c.get('manual_attribution', {}).get('issue_keys', []) if c.get('manual_attribution') else c.get('line_issue_candidates', []) if c.get('line_commit_candidates') else c.get('issue_candidates', []))})
-                        same_ticket = bool(set(ctickets) & set(sdk['tickets']))
-                        alerts.append({'kind': '同工单 SDK 与消费方变化' if same_ticket else '变化类引用SDK', 'reason': '消费方变化类存在 SDK 类型导入；不能证明运行时调用。',
-                                       'sdk': sdk, 'consumer': consumer, 'path': path, 'imports': matched, 'tickets': ctickets,
-                                       'change_ids': [c['id'] for c in cc]})
     for project, sides in snapshots.items():
         for side, inv in sides.items():
             for m in inv['modules']:
                 if m['parent_unresolved']:
                     gaps.append(project + ' ' + side + ' / ' + m['path'] + '：外部或无法解析的父 POM')
-    return {'sdks': sdks, 'alerts': alerts, 'gaps': sorted(set(gaps)),
+    contract = analyze_contract_uses(
+        sdks, entries, snapshots, ledgers,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'sdk_contract_source')
+    gaps.extend('SDK contract: ' + json.dumps(item, ensure_ascii=False)
+                for item in contract['gaps'])
+    return {'sdks': sdks, 'alerts': alerts,
+            'contract_changes': contract['changes'],
+            'contract_impacts': contract['impacts'], 'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
                           'branch': i.get('branch')} for p, i in entries.items()]}

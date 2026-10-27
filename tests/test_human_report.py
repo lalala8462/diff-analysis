@@ -137,7 +137,7 @@ class HumanReportTests(unittest.TestCase):
             ledgers = [final_diff_ledger(*x) for x in specs]
             result = analyze(specs, ledgers)
             self.assertTrue(any(x['kind'] == 'SDK消费者' and '旧版本' in x['reason'] for x in result['alerts']))
-            self.assertTrue(any(x['kind'] == '变化类引用SDK' for x in result['alerts']))
+            self.assertFalse(any(x['kind'] == '变化类引用SDK' for x in result['alerts']))
             report = root / 'out'
             report.mkdir()
             write_html(report, {'ledgers': ledgers}, specs, [])
@@ -154,7 +154,7 @@ class HumanReportTests(unittest.TestCase):
             self.assertIn('SDK 项目本次比较新版', output)
             self.assertIn('不代表生产或最新发布版本', output)
             self.assertEqual(1, output.count('SDK 与消费者项目：local/consumer'))
-            self.assertIn('相关变更类和引用（1 处）', output)
+            self.assertNotIn('相关变更类和引用（1 处）', output)
             self.assertIn('src/main/java/C.java', output)
             upgraded = commit(consumer, 'pom.xml', cpom.replace('<sdk.version>1</sdk.version>', '<sdk.version>2</sdk.version>'), 'PAY-2 upgrade')
             upgraded_specs = [(sdk, 'local/sdk', base, head), (consumer, 'local/consumer', cbase, upgraded)]
@@ -167,7 +167,7 @@ class HumanReportTests(unittest.TestCase):
             same_version_result = analyze(same_version_specs, same_version_ledgers)
             self.assertFalse(any(x['kind'] == 'SDK消费者' for x in same_version_result['alerts']))
             self.assertTrue(any(x['kind'] == 'SDK自身版本' for x in same_version_result['alerts']))
-            self.assertTrue(any(x['kind'] == '变化类引用SDK' for x in same_version_result['alerts']))
+            self.assertFalse(any(x['kind'] == '变化类引用SDK' for x in same_version_result['alerts']))
 
     def test_local_parent_and_fixed_consumer_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
