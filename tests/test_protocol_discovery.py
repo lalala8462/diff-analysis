@@ -41,6 +41,7 @@ class DiscoveryTests(unittest.TestCase):
             replay = discover(root, {"team/pay": repo})
             self.assertEqual(2, replay["index_hits"])
             self.assertEqual(0, replay["index_builds"])
+            self.assertTrue((root / "_source_snapshot_cache").is_dir())
             result = json.loads((root / "protocol_discovery_latest.json").read_text("utf-8"))
             kinds = {x["kind"] for x in result["hints"]}
             self.assertTrue({"DUBBO", "HTTP", "MQ", "DATABASE"}.issubset(kinds))

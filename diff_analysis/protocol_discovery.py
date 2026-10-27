@@ -9,6 +9,7 @@ from pathlib import Path
 from .gitops import git, check_sha
 from .source_index import source_snapshot_index, RULES_VERSION as SOURCE_INDEX_RULES_VERSION
 from .review_workflow import load_batch, _hash, _utc, _write_json
+from .release_report import DEFAULT_RUN_ROOT
 
 PATTERNS = (
     ("DUBBO", "PROVIDER", re.compile(r"@DubboService\b|<dubbo:service\b")),
@@ -32,6 +33,10 @@ def discover(run_dir, repos):
     hints, omissions = [], []
     files_seen, bytes_seen = 0, 0
     index_hits, index_builds = 0, 0
+    # Production runs share the project cache; isolated/test batches keep theirs local.
+    standard_runs = DEFAULT_RUN_ROOT.resolve()
+    cache_dir = (standard_runs.parent / 'cache' / 'source_snapshots'
+                 if standard_runs in root.parents else root / '_source_snapshot_cache')
     for ledger in release["ledgers"]:
         project = ledger["project"]
         if project not in repos:
@@ -44,7 +49,7 @@ def discover(run_dir, repos):
                                   "reason": "PINNED_SHA_NOT_AVAILABLE"})
                 continue
             index, hit = source_snapshot_index(
-                repo, project, sha, root.parent / "_source_snapshot_cache",
+                repo, project, sha, cache_dir,
                 extensions=EXTS)
             index_hits += int(hit)
             index_builds += int(not hit)
