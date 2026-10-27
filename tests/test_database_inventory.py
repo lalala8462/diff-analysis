@@ -49,6 +49,13 @@ class TableInventoryTests(unittest.TestCase):
         self.assertEqual(["DDL", "DDL"], [x["role"] for x in ddl])
         self.assertEqual([1, 2], [x["start"] for x in ddl])
 
+    def test_delete_from_is_a_write_not_a_read(self):
+        uses, gaps = extract_table_uses(
+            "DELETE FROM trans_record WHERE status='CLOSED';", "clean.sql")
+        self.assertEqual([], gaps)
+        self.assertEqual([("trans_record", "WRITE")],
+                         [(x["table"], x["role"]) for x in uses])
+
     def test_comments_and_random_literals_do_not_create_table(self):
         text = ('/* SELECT * FROM fake_table */\n'
                 'SELECT * FROM real_table;\n-- UPDATE fake_table SET a=1\n')

@@ -15,7 +15,7 @@ from .gitops import git
 from .source_index import source_snapshot_index
 from .sdk_contracts import declarations
 
-RULES_VERSION = "shared-resources-v2"
+RULES_VERSION = "shared-resources-v3"
 MAX_FILES = 3500
 MAX_BYTES = 16_000_000
 MAX_FILE_BYTES = 350_000
@@ -26,7 +26,7 @@ MAX_USES_PER_IMPACT = 60
 _STRING = r'"(?:\\.|[^"\\])*"'
 CONSTANT = re.compile(r'\b(?:static\s+)?final\s+String\s+([A-Za-z_$]\w*)\s*=\s*([^;]+);')
 STRING = re.compile(_STRING)
-JAVA_COMMENTS = re.compile(r'/\*[\s\S]*?\*/|//[^\n]*')
+JAVA_COMMENTS = re.compile(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|/\*[\s\S]*?\*/|//[^\n]*')
 REDIS_CALL = re.compile(
     r'\b(?:[A-Za-z_$]\w*(?:Redis|redis|Cache|cache|Jedis|jedis)[A-Za-z_$\w]*'
     r'|redisTemplate|redisClient|jedis)'
@@ -60,7 +60,11 @@ def _hash(value):
 
 
 def _clean_comments(text):
-    return JAVA_COMMENTS.sub(lambda m: re.sub(r"[^\n]", " ", m.group()), text)
+    # Consume Java string/character literals before looking for comments:
+    # policy keys such as "https://..." must not be truncated at '//'.
+    return JAVA_COMMENTS.sub(
+        lambda m: m.group() if m.group().startswith(('"', "'")) else
+        re.sub(r"[^\n]", " ", m.group()), text)
 
 
 def _line(text, start):
@@ -118,8 +122,14 @@ def _observation(kind, role, value, exact, path, text, start, end,
 def extract_resources(text, path):
     """Read only source-visible literals and conservative name/prefix evidence."""
     visible = _clean_comments(text) if path.endswith(".java") else text
+    # Mask string literals without shifting positions. Declaration and call
+    # patterns must not match Java code quoted inside a log/message string.
+    masked = re.sub(_STRING, lambda m: re.sub(r"[^\n]", " ", m.group()),
+                    visible) if path.endswith(".java") else visible
     gaps, found, constants = [], [], {}
     for match in CONSTANT.finditer(visible):
+        if masked[match.start()].isspace():
+            continue
         val, exact, _ = _expr(match.group(2), {})
         constants[match.group(1)] = val if exact else None
     ds = DATA_SOURCE.search(visible)
@@ -127,8 +137,10 @@ def extract_resources(text, path):
 
     if path.endswith(".java"):
         variable_types = {name: typename.rsplit(".", 1)[-1]
-                          for typename, name in VALUE_VAR.findall(visible)}
+                          for typename, name in VALUE_VAR.findall(masked)}
         for match in REDIS_CALL.finditer(visible):
+            if masked[match.start()].isspace():
+                continue
             method, args = match.groups()
             prefix, exact, dynamic = _expr(args, constants)
             if not prefix:
@@ -149,6 +161,8 @@ def extract_resources(text, path):
                 gaps.append({"path": path, "line": _line(text, match.start()),
                              "reason": "DYNAMIC_REDIS_KEY_PREFIX_ONLY"})
         for match in CACHE_ANNOTATION.finditer(visible):
+            if masked[match.start()].isspace():
+                continue
             annotation, attributes = match.groups()
             val = re.search(r'\b(?:value|cacheNames)\s*=\s*"([^"]+)"', attributes)
             key = re.search(r'\bkey\s*=\s*"([^"]+)"', attributes)
@@ -169,20 +183,24 @@ def extract_resources(text, path):
                 gaps.append({"path": path, "line": _line(text, match.start()),
                              "reason": "SPEL_CACHE_KEY_PREFIX_ONLY"})
         pkg = PACKAGE.search(visible)
-        for match in CLASS.finditer(visible):
+        for match in CLASS.finditer(masked):
             name = match.group(1)
             fqcn = (pkg.group(1) + "." if pkg else "") + name
             found.append(_observation("REFLECT_CLASS", "DECLARATION", fqcn, True,
                                       path, text, match.start(), match.end(), "CLASS"))
         for match in SPRING_BEAN.finditer(visible):
+            if masked[match.start()].isspace():
+                continue
             name = match.group(2) or match.group(3)
             if name:
                 found.append(_observation("SPRING_BEAN", "DECLARATION", name, True,
                                           path, text, match.start(), match.end(), "ANNOTATION"))
-        for match in METHOD_DECL.finditer(visible):
+        for match in METHOD_DECL.finditer(masked):
             found.append(_observation("REFLECT_METHOD", "DECLARATION", match.group(1), True,
                                       path, text, match.start(), match.end(), "METHOD"))
         for match in REFLECT.finditer(visible):
+            if masked[match.start()].isspace():
+                continue
             op, args = match.groups()
             name, exact, _ = _expr(args, constants)
             kind = ("REFLECT_CLASS" if "forName" in op else

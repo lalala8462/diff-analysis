@@ -11,7 +11,7 @@ from pathlib import Path
 from .gitops import git, safe_source_path
 from .source_index import source_snapshot_index
 
-RULES_VERSION = "sdk-contract-lexical-v1"
+RULES_VERSION = "sdk-contract-lexical-v3"
 MAX_BLOB = 600_000
 MAX_CONSUMER_BYTES = 12_000_000
 MAX_CONSUMER_FILES = 2500
@@ -48,12 +48,31 @@ def _source(repo, sha, path, gaps):
 def _code(text):
     def erase(match):
         return re.sub(r"[^\n]", " ", match.group())
-    return re.sub(r"/\*[\s\S]*?\*/|//[^\n]*", erase, text)
+    # Java strings before comment delimiters: fake method calls and type
+    # names inside literals must not become contract/consumer evidence.
+    return re.sub(r'"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|'
+                  r'/\*[\s\S]*?\*/|//[^\n]*', erase, text)
 
 
 def _params(value):
+    # Generic commas are not parameter boundaries: Map<String, Integer> is
+    # one parameter. Preserve JDK 8 generics without invoking javac or code.
+    fragments, start, depth = [], 0, 0
+    for index, char in enumerate(value):
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif char == "," and depth == 0:
+            fragments.append(value[start:index])
+            start = index + 1
+    if depth:
+        return None
+    fragments.append(value[start:])
     parts = []
-    for raw in value.split(","):
+    for raw in fragments:
         raw = re.sub(r"@[\w.]+(?:\([^)]*\))?", " ", raw)
         words = raw.strip().replace("...", "[]").split()
         if not words:
@@ -146,6 +165,7 @@ def contract_changes(sdk, repo, snapshots, gaps):
     old_names = set(snapshots.get("base", {}).get("names", []))
     new_names = set(snapshots.get("head", {}).get("names", []))
     found = []
+    java_events = sdk.get("java_changes", [])
     for path in sorted(set(sdk.get("java_change_paths", []))):
         if not path.endswith(".java") or not path.startswith(prefix):
             continue
@@ -165,9 +185,32 @@ def contract_changes(sdk, repo, snapshots, gaps):
                 gaps.extend({"path": path, "reason": reason} for reason in side["omissions"])
         oldmembers = old["members"] if old else {}
         newmembers = new["members"] if new else {}
+        # SDK alerts may cover many unrelated files/hunks. A member only
+        # receives the D-* records that actually overlap its declaration.
+        related = [c for c in java_events
+                   if c.get("path") == path or c.get("old_path") == path]
         for identity in sorted(oldmembers.keys() | newmembers.keys()):
             previous, current = oldmembers.get(identity), newmembers.get(identity)
             if previous and current and previous["signature"] == current["signature"]:
+                continue
+            matching_ids = []
+            for event in related:
+                touched = False
+                for location, field, source_path in (
+                        (previous, "old_range", "old_path"),
+                        (current, "new_range", "path")):
+                    if not location or event.get(source_path) != path:
+                        continue
+                    span = event.get(field) or {}
+                    line, start, count = location["line"], span.get("start"), span.get("count")
+                    if (isinstance(start, int) and isinstance(count, int)
+                            and count > 0 and start <= line < start + count):
+                        touched = True
+                if touched:
+                    matching_ids.append(event["id"])
+            if java_events and not matching_ids:
+                gaps.append({"path": path, "reason": "SDK_MEMBER_DIFF_RANGE_UNMAPPED",
+                             "member": identity})
                 continue
             found.append({
                 "identity": identity, "type": (new or old)["type"],
@@ -175,7 +218,8 @@ def contract_changes(sdk, repo, snapshots, gaps):
                 "old": previous, "new": current,
                 "status": ("REMOVED" if not current else "ADDED" if not previous else "MODIFIED"),
                 "sdk_project": sdk["project"], "base_sha": sdk["base_sha"],
-                "head_sha": sdk["head_sha"], "change_ids": sdk["changes"]})
+                "head_sha": sdk["head_sha"],
+                "change_ids": sorted(set(matching_ids or sdk["changes"]))})
     return found
 
 

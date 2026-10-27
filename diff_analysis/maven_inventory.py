@@ -201,9 +201,17 @@ def analyze(specs, ledgers, manifest=None):
                    'base_sha': entries[project]['base'], 'head_sha': entries[project]['head'],
                    'new_version': newmods.get(module_path, {}).get('version'), 'changes': [c['id'] for c in changes],
                    'tickets': sorted({key for c in changes for key in (c.get('manual_attribution', {}).get('issue_keys', []) if c.get('manual_attribution') else c.get('line_issue_candidates', []) if c.get('line_commit_candidates') else c.get('issue_candidates', []))})}
+            sdk['java_changes'] = [
+                {'id': c['id'], 'path': c['path'],
+                 'old_path': c.get('old_path', c['path']),
+                 'new_range': c.get('new_range'),
+                 'old_range': c.get('old_range')}
+                for c in changes if c['path'].endswith('.java')
+                or c.get('old_path', '').endswith('.java')]
             sdk['java_change_paths'] = sorted({
-                path for c in changes for path in (c.get('path'), c.get('old_path'))
-                if path and path.endswith('.java')})
+                path for c in sdk['java_changes']
+                for path in (c['path'], c['old_path'])
+                if path.endswith('.java')})
             sdks.append(sdk)
             if not sdk['group'] or not sdk['artifact']:
                 gaps.append(project + ' / ' + module['path'] + '：SDK 坐标不完整，无法匹配消费者')
@@ -213,17 +221,6 @@ def analyze(specs, ledgers, manifest=None):
             version_changed = bool(sdk['old_version'] and sdk['new_version'] and sdk['old_version'] != sdk['new_version'])
             if not sdk['old_version'] or not sdk['new_version']:
                 gaps.append(project + ' / ' + module['path'] + '：本次 SDK 版本变化无法确定，未进行消费者版本对照')
-            types = set()
-            type_side = 'head' if module_path in newmods else 'base'
-            for path in sides[type_side]['names']:
-                if path.startswith(prefix) and path.endswith('.java'):
-                    try:
-                        text = git(entries[project]['repo'], 'show', entries[project][type_side] + ':' + path).decode('utf-8', 'replace')
-                        pkg = re.search(r'(?m)^\s*package\s+([\w.]+)\s*;', text)
-                        if pkg:
-                            types.add(pkg.group(1) + '.' + posixpath.basename(path)[:-5])
-                    except RuntimeError:
-                        gaps.append(project + '：无法读取 SDK 类型 ' + path)
             for consumer, csides in snapshots.items():
                 if consumer == project:
                     continue

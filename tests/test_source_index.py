@@ -85,6 +85,20 @@ class SourceIndexTests(unittest.TestCase):
         self.assertEqual(["A.java"], [x["path"] for x in java_only["files"]])
         self.assertNotEqual(java_only["index_key"], full["index_key"])
 
+    def test_inconsistent_coverage_metadata_forces_cache_rebuild(self):
+        from diff_analysis.source_index import _digest
+        sha = commit(self.repo, "A.java", "class A {}\\n")
+        initial, _ = source_snapshot_index(self.repo, "p", sha, self.cache)
+        path = (self.cache / initial["index_key"][:2] /
+                (initial["index_key"] + ".json"))
+        wrapper = json.loads(path.read_text("utf-8"))
+        wrapper["payload"]["file_count"] = 0
+        wrapper["digest"] = _digest(wrapper["payload"])
+        path.write_text(json.dumps(wrapper), encoding="utf-8")
+        restored, hit = source_snapshot_index(self.repo, "p", sha, self.cache)
+        self.assertFalse(hit)
+        self.assertEqual(1, restored["file_count"])
+
     def test_invalid_sha_fails_instead_of_using_implicit_head(self):
         with self.assertRaises(Exception):
             source_snapshot_index(self.repo, "p", "main", self.cache)

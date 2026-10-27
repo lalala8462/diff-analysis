@@ -55,6 +55,22 @@ class SharedResourcesTests(unittest.TestCase):
         self.assertIn("DYNAMIC_REDIS_KEY_UNRESOLVED",
                       [g["reason"] for g in gaps])
 
+    def test_literals_are_not_fake_redis_calls_and_url_keys_survive(self):
+        java = '''class Example {
+  String sample = "ctx.getBean(\\\"wrongBean\\\")";
+  String fake = "redisTemplate.opsForValue().get(\\\"fake:key\\\")";
+  void real() {
+    redisTemplate.opsForValue().get("http://cache/real");
+  }
+}'''
+        observations, _ = extract_resources(java, "Example.java")
+        keys = [x["resource"] for x in observations
+                if x["kind"] == "REDIS_KEY"]
+        self.assertEqual(["http://cache/real"], keys)
+        self.assertFalse(any(x["kind"] == "SPRING_BEAN" and
+                             x["resource"] == "wrongBean"
+                             for x in observations))
+
     def test_spring_reflection_class_and_xml(self):
         java = '''package com.example;
 @Service("paymentAgent")

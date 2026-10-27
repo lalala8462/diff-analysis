@@ -47,6 +47,12 @@ public class Dto {
         self.assertIn("serialized=old_name", model["members"]["FIELD:status"]["signature"])
         self.assertEqual("String()", model["members"]["METHOD:getStatus/0"]["signature"])
         self.assertNotIn("METHOD:helper/0", model["members"])
+        generic = declarations(
+            "package a;\npublic interface Api {\n"
+            "  public void save(java.util.Map<String, Integer> input);\n}",
+            "Api.java")
+        self.assertIn("METHOD:save/1", generic["members"])
+        self.assertIn("Map<String,Integer>", generic["members"]["METHOD:save/1"]["signature"])
         enum = declarations("package a; public enum State { READY, FAILED, UNKNOWN; }", "State.java")
         self.assertIn("ENUM:UNKNOWN", enum["members"])
 
@@ -109,6 +115,43 @@ class C {
             self.assertEqual("METHOD:getStatus/0", impact["uses"][0]["contract"]["identity"])
             self.assertEqual("MODIFIED", impact["uses"][0]["contract"]["status"])
             self.assertFalse(any(x["kind"] == "变化类引用SDK" for x in result["alerts"]))
+
+    def test_hunk_scoped_sdk_member_ids_and_literal_ignored(self):
+        from diff_analysis.sdk_contracts import contract_changes
+        with tempfile.TemporaryDirectory() as folder:
+            repo = setup(Path(folder) / "sdk")
+            path = "src/main/java/a/Dto.java"
+            original = ("package a;\npublic class Dto {\n"
+                        " public String first() { return \"a\"; }\n"
+                        " public String second() { return \"b\"; }\n}\n")
+            new = ("package a;\npublic class Dto {\n"
+                   " public int first() { return 1; }\n"
+                   " public int second() { return 2; }\n}\n")
+            base = commit(repo, path, original)
+            head = commit(repo, path, new)
+            sdk = {"project": "p", "module": "pom.xml", "base_sha": base,
+                   "head_sha": head, "changes": ["D-1", "D-2"],
+                   "java_change_paths": [path],
+                   "java_changes": [
+                       {"id": "D-1", "path": path, "old_path": path,
+                        "old_range": {"start": 3, "count": 1},
+                        "new_range": {"start": 3, "count": 1}},
+                       {"id": "D-2", "path": path, "old_path": path,
+                        "old_range": {"start": 4, "count": 1},
+                        "new_range": {"start": 4, "count": 1}}]}
+            snapshots = {"base": {"names": [path]},
+                         "head": {"names": [path]}}
+            changes = contract_changes(sdk, repo, snapshots, [])
+            by_member = {x["identity"]: x for x in changes}
+            self.assertEqual(["D-1"],
+                             by_member["METHOD:first/0"]["change_ids"])
+            self.assertEqual(["D-2"],
+                             by_member["METHOD:second/0"]["change_ids"])
+        contract = {"type": "a.Dto", "simple_name": "Dto",
+                    "identity": "METHOD:first/0"}
+        self.assertEqual([], _consumer_uses(
+            'import a.Dto;\nclass C { Dto dto; String log = "dto.first()"; }',
+            contract))
 
     def test_import_only_does_not_produce_contract_use(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -15,7 +15,8 @@ from .gitops import git, check_sha, safe_source_path
 
 
 SCHEMA_VERSION = "source-snapshot-index-v1"
-RULES_VERSION = "source-tree-selection-v1"
+RULES_VERSION = "source-tree-selection-v2"
+SELECTION_REVISION = "portable-source-selection-v2"
 SOURCE_EXTENSIONS = frozenset({
     ".java", ".xml", ".sql", ".yml", ".yaml", ".properties", ".json"
 })
@@ -40,12 +41,18 @@ def _valid_cache(record, key, project, sha, extensions, limit):
         return False
     if (payload.get("index_key") != key or payload.get("project") != project or
             payload.get("sha") != sha or payload.get("schema_version") != SCHEMA_VERSION or
+            payload.get("selection_revision") != SELECTION_REVISION or
             payload.get("extensions") != extensions or payload.get("max_files") != limit or
             not isinstance(payload.get("truncated"), bool) or
             not isinstance(payload.get("omissions"), list)):
         return False
     files = payload.get("files")
-    if not isinstance(files, list) or len(files) > limit:
+    if (not isinstance(files, list) or len(files) > limit
+            or payload.get("file_count") != len(files)):
+        return False
+    if (payload["truncated"] and not any(
+            isinstance(gap, dict) and gap.get("reason") == "SOURCE_INDEX_FILE_LIMIT"
+            for gap in payload["omissions"])):
         return False
     return all(isinstance(item, dict) and
                isinstance(item.get("path"), str) and
@@ -66,6 +73,7 @@ def _inventory(repo, project, sha, key, extensions, limit):
     raw = git(repo, "ls-tree", "-r", "-z", sha)
     files = []
     skipped_paths = 0
+    skipped_links = 0
     truncated = False
     for entry in raw.split(b"\0"):
         if not entry:
@@ -77,7 +85,11 @@ def _inventory(repo, project, sha, key, extensions, limit):
         except (ValueError, UnicodeError):
             skipped_paths += 1
             continue
-        if kind != "blob" or mode == "120000":
+        if kind != "blob":
+            continue
+        if mode == "120000":
+            if Path(path).suffix.lower() in extensions:
+                skipped_links += 1
             continue
         if Path(path).suffix.lower() not in extensions:
             continue
@@ -98,10 +110,15 @@ def _inventory(repo, project, sha, key, extensions, limit):
     if skipped_paths:
         omissions.append({"reason": "UNSAFE_OR_UNDECODABLE_SOURCE_PATH",
                           "count": skipped_paths})
+    if skipped_links:
+        omissions.append({"reason": "SYMLINK_SOURCE_NOT_INDEXED",
+                          "count": skipped_links})
     if truncated:
         omissions.append({"reason": "SOURCE_INDEX_FILE_LIMIT",
                           "max_files": limit})
-    return {"schema_version": SCHEMA_VERSION, "index_key": key,
+    return {"schema_version": SCHEMA_VERSION,
+            "selection_revision": SELECTION_REVISION,
+            "index_key": key,
             "project": project, "sha": sha,
             "extensions": extensions, "max_files": limit,
             "files": files, "file_count": len(files),
@@ -130,7 +147,8 @@ def source_snapshot_index(repo, project, sha, cache_dir, *,
         raise ValueError("Expected lowercase source suffixes")
     chosen = sorted(set(extensions))
     sha = check_sha(repo, sha)
-    key = _digest([SCHEMA_VERSION, project, sha, rules_version,
+    key = _digest([SCHEMA_VERSION, SELECTION_REVISION,
+                   project, sha, rules_version,
                    chosen, max_files])
     target = Path(cache_dir) / key[:2] / (key + ".json")
     if target.is_file():

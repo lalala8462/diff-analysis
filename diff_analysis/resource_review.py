@@ -81,8 +81,28 @@ def normalized_candidates(dependency_scope):
             item["kind"], item["producer_project"], item["consumer_project"],
             item["resource"], item["producer_base_sha"],
             item["producer_head_sha"], item["consumer_sha"]])[:20]
+    # A resource can be discovered by more than one provider-side hunk/mapper.
+    # Merge before persisting: otherwise the revision overlay's ID map silently
+    # drops all but the last candidate while HTML still shows duplicates.
+    merged = {}
+    for item in result:
+        key = item["id"]
+        if key not in merged:
+            merged[key] = item
+            continue
+        current = merged[key]
+        current["change_ids"] = sorted(set(current["change_ids"] + item["change_ids"]))
+        for field in ("source_uses", "consumer_uses"):
+            seen = {_hash(location) for location in current[field]}
+            for location in item[field]:
+                signature = _hash(location)
+                if signature not in seen:
+                    current[field].append(location)
+                    seen.add(signature)
+        if current["status"] != item["status"]:
+            current["status"] = "MULTIPLE_STATIC_CANDIDATES_UNCONFIRMED"
     return {"schema_version": "resource-impact-index-v1",
-            "candidates": sorted(result, key=lambda x: x["id"]),
+            "candidates": sorted(merged.values(), key=lambda x: x["id"]),
             "coverage_gaps": (dependency_scope.get("database", {}).get("omissions", []) +
                               dependency_scope.get("shared_resources", {}).get("omissions", [])),
             "limitation": "Static project/resource/name candidates, never verified runtime bindings"}

@@ -115,6 +115,24 @@ class ResourceReviewTests(unittest.TestCase):
         again = update_review_package(self.root)
         self.assertEqual(2, again["questions_reused"])
 
+    def test_same_resource_identity_merges_all_change_evidence(self):
+        def impact(change_id, line):
+            return {"kind": "REDIS_KEY", "resource": "policy:",
+                    "producer_project": "spms", "consumer_project": "webapi",
+                    "base_sha": "a" * 40, "head_sha": "b" * 40,
+                    "consumer_sha": "c" * 40, "change_ids": [change_id],
+                    "source_uses": [{"path": "Cache.java", "start": line, "end": line,
+                                      "side": "head"}],
+                    "consumer_uses": [{"path": "Read.java", "start": line, "end": line}],
+                    "status": "STATIC_RESOURCE_NAME_ONLY_UNCONFIRMED"}
+        normalized = normalized_candidates({
+            "shared_resources": {"impacts": [impact("D-1", 3),
+                                             impact("D-2", 7)]}})
+        self.assertEqual(1, len(normalized["candidates"]))
+        item = normalized["candidates"][0]
+        self.assertEqual(["D-1", "D-2"], item["change_ids"])
+        self.assertEqual(2, len(item["consumer_uses"]))
+
     def test_cross_resource_kind_candidates_are_distinct(self):
         db = {
             "database": {"impacts": [{
