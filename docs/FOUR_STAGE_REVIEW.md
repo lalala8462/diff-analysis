@@ -35,9 +35,15 @@
 ### 2. 数据库表
 
 - MyBatis XML、SQL/DDL、有限的 Java 字符串 SQL 和显式表映射按固定 SHA 收集读写位置；相同表名只是关联候选。
-- `DELETE FROM` 的写操作分支经过本地核查，**不是已确认缺陷**。
+- 修复确认的 `DELETE FROM` 误分类：原正则在 `DELETE FROM` 之前先匹配 `FROM`，可能将 DELETE 解析为 READ。已调整正则备选顺序、增加回归用例，并提升数据库解析规则版本使旧缓存失效。
 - Hunk 与 SQL 片段重叠只能说明语句受到修改，不代表表结构必然有不兼容变更。
 - **仍需**：SQL AST、跨行复杂 Java SQL、MyBatis include/choose/foreach、视图/别名、schema/数据源路由及字段级血缘。不同实例同名表必须保持待确认。
+
+### 本轮追加修复：缓存 Key 精确度与证据截断
+
+- `@Cacheable(cacheNames="...")` 未显式指定 `key` 时，实际 Key 由 Spring 默认生成器确定，不能把命名空间前缀误认成精确 Key。此处改为非精确前缀候选，记录 `CACHE_KEY_GENERATED_UNRESOLVED`。
+- 同一跨项目数据库表或 Redis/反射资源候选的源码使用位置超过单候选展示上限时，增加 `TABLE_EVIDENCE_LOCATIONS_TRUNCATED` / `RESOURCE_EVIDENCE_LOCATIONS_TRUNCATED`，不能把前 50/60 条误当成全部命中。
+- 新增 `DELETE FROM` 与 SQL 字符串伪表引用、缺省 Spring 缓存 Key 的回归用例；最新修改后**没有成功运行完整测试**。CI 仍在 Job 执行零步骤时失败，无法据此得出代码通过结论。
 
 ### 3. Redis / 反射 / Spring
 

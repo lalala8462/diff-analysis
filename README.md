@@ -49,7 +49,7 @@ SDK 消费者检查可以通过 `--project-registry projects.json` 补充登记�
 --evidence "rhf/consumer=D:\repos\consumer@<固定BASE-SHA>@<固定HEAD-SHA>"
 ~~~
 
-EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次需求。登记项目和架构默认分支当前主要用于 Maven/SDK 引用检查，不等于对这些项目的数据库、Redis 和所有调用关系完成扫描。多个自建 GitLab MR、只读 Token、JAR classpath 清单等操作见 [Windows 操作指南](docs/WINDOWS_SETUP.md)。
+EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次需求。登记项目和架构默认分支会参与 Maven/SDK 及已实现的数据库表、Redis/反射固定 SHA 资源扫描；但扫描只覆盖受支持的静态语法、受预算限制，不等于完成所有数据库、Redis 和跨项目调用关系的精确绑定。多个自建 GitLab MR、只读 Token、JAR classpath 清单等操作见 [Windows 操作指南](docs/WINDOWS_SETUP.md)。
 
 ## 当前会作为重点展示的场景
 
@@ -73,7 +73,7 @@ EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次�
 
 运行 `discover-connections` 时，会按“项目 + 固定 Git SHA + 索引规则版本 + 文件类型范围 + 文件数量上限”读取或创建源文件元数据索引，正常运行缓存位于 `.diff-analysis/cache/source_snapshots/`，跨运行目录复用；独立测试目录的缓存则位于自身目录内。缓存损坏时重新扫描，文件路径不可安全处理或超出数量上限会保留 omissions；BASE/HEAD 相同 SHA 可共享同一索引，不读取未提交的工作区修改。
 
-**边界：目前缓存的是 Java/XML/SQL/配置文件的路径和 Git blob SHA，并非已解析的 SDK 契约、数据库表、Redis Key 或反射调用使用关系。** 四类资源的结构化提取、消费者关联与增量重算仍按下文阶段继续实施。现有协议发现结果仍为候选，不推断运行时连接。
+**边界：阶段 0 的通用索引只缓存 Java/XML/SQL/配置文件的 Git 路径和 blob SHA；阶段 1～4 已在各自模块实现首期词法资源提取、消费方候选与修订叠加。** 通用索引本身仍不包含完整 SDK 语义、数据库/Redis 实例身份或反射真实调用。现有协议发现结果仍是候选，不推断运行时连接。
 
 ## 阶段 1：SDK 契约和未修改消费者（首期静态候选）
 
