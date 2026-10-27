@@ -6,7 +6,8 @@ needs a separate version-scoped identity and deployment attestation to bind.
 import re
 from pathlib import Path
 
-from .gitops import git, check_sha, safe_source_path
+from .gitops import git, check_sha
+from .source_index import source_snapshot_index, RULES_VERSION as SOURCE_INDEX_RULES_VERSION
 from .review_workflow import load_batch, _hash, _utc, _write_json
 
 PATTERNS = (
@@ -30,6 +31,7 @@ def discover(run_dir, repos):
     root, release = load_batch(run_dir)
     hints, omissions = [], []
     files_seen, bytes_seen = 0, 0
+    index_hits, index_builds = 0, 0
     for ledger in release["ledgers"]:
         project = ledger["project"]
         if project not in repos:
@@ -41,21 +43,20 @@ def discover(run_dir, repos):
                 omissions.append({"project": project, "side": side,
                                   "reason": "PINNED_SHA_NOT_AVAILABLE"})
                 continue
-            tree = git(repo, "ls-tree", "-r", "-z", sha)
-            for entry in tree.split(b"\x00"):
-                if not entry:
-                    continue
+            index, hit = source_snapshot_index(
+                repo, project, sha, root.parent / "_source_snapshot_cache",
+                extensions=EXTS)
+            index_hits += int(hit)
+            index_builds += int(not hit)
+            for gap in index["omissions"]:
+                omissions.append({"project": project, "side": side, **gap})
+            for file in index["files"]:
                 if files_seen >= MAX_FILES or bytes_seen >= MAX_SCAN_BYTES or len(hints) >= MAX_HINTS:
                     omissions.append({"project": project, "side": side,
                                       "reason": "DISCOVERY_BUDGET_EXHAUSTED"})
                     break
-                metadata, raw_path = entry.split(b"\t", 1)
-                mode, kind, blob = metadata.decode("ascii").split()
-                path = raw_path.decode("utf-8", "replace")
-                if (kind != "blob" or mode == "120000" or
-                        not safe_source_path(path) or
-                        Path(path).suffix.lower() not in EXTS):
-                    continue
+                path = file["path"]
+                blob = file["blob_sha"]
                 files_seen += 1
                 size = int(git(repo, "cat-file", "-s", blob).decode("ascii").strip())
                 if size > MAX_SINGLE_BLOB:
@@ -105,6 +106,8 @@ def discover(run_dir, repos):
         "hint_count": len(hints),
         "hints": hints, "omissions": omissions,
         "files_visited": files_seen, "source_bytes_read": bytes_seen,
+        "source_index_cache": {"hits": index_hits, "builds": index_builds,
+                               "rules_version": SOURCE_INDEX_RULES_VERSION},
         "limitation": "Hints are versioned code appearances, not bound RPC, broker "
                       "messages or database objects; use bind-connections separately."
     }
@@ -113,4 +116,5 @@ def discover(run_dir, repos):
     _write_json(folder / ("protocol-" + _hash(result)[:12] + ".json"), result)
     _write_json(root / "protocol_discovery_latest.json", result)
     return {"hints": len(hints), "omissions": len(omissions),
-            "files": files_seen, "bytes": bytes_seen}
+            "files": files_seen, "bytes": bytes_seen,
+            "index_hits": index_hits, "index_builds": index_builds}

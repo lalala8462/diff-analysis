@@ -36,6 +36,11 @@ class DiscoveryTests(unittest.TestCase):
             (root / "analysis.json").write_text(json.dumps(release), encoding="utf-8")
             res = discover(root, {"team/pay": repo})
             self.assertGreaterEqual(res["hints"], 4)
+            self.assertEqual(1, res["index_builds"])
+            self.assertEqual(1, res["index_hits"])
+            replay = discover(root, {"team/pay": repo})
+            self.assertEqual(2, replay["index_hits"])
+            self.assertEqual(0, replay["index_builds"])
             result = json.loads((root / "protocol_discovery_latest.json").read_text("utf-8"))
             kinds = {x["kind"] for x in result["hints"]}
             self.assertTrue({"DUBBO", "HTTP", "MQ", "DATABASE"}.issubset(kinds))
