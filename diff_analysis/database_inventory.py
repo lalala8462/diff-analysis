@@ -14,7 +14,7 @@ from pathlib import Path
 from .gitops import git
 from .source_index import source_snapshot_index
 
-RULES_VERSION = "database-table-v1"
+RULES_VERSION = "database-table-v2"
 MAX_FILE_BYTES = 500_000
 MAX_SNAPSHOT_BYTES = 20_000_000
 MAX_SNAPSHOT_FILES = 4000
@@ -26,7 +26,7 @@ DYNAMIC = "$" + "{"
 PART = r"(?:[" + chr(96) + r"]?[A-Za-z_][\w$]*[" + chr(96) + r"]?)"
 IDENT = r"(" + PART + r"(?:\s*\.\s*" + PART + r")?)"
 SQL_TABLE = re.compile(
-    r"\b(FROM|JOIN|UPDATE|INTO|DELETE\s+FROM|CREATE\s+TABLE"
+    r"\b(DELETE\s+FROM|FROM|JOIN|UPDATE|INTO|CREATE\s+TABLE"
     r"|ALTER\s+TABLE|DROP\s+TABLE|TRUNCATE\s+TABLE)\s+"
     r"(?:IF\s+(?:NOT\s+)?EXISTS\s+)?" + IDENT, re.I)
 XML_SQL = re.compile(r"<(select|insert|update|delete)\b[^>]*>(.*?)</\1\s*>", re.I | re.S)
@@ -57,7 +57,10 @@ def _line(text, offset):
 
 def _sql_uses(fragment, path, full_text, absolute_start, method, ds_hint=None):
     result = []
-    masked = re.sub(r"/\*[\s\S]*?\*/|--[^\n]*", _blank, fragment)
+    # Mask quoted SQL literals as well as comments; FROM/UPDATE inside a
+    # string value is not a table reference.
+    masked = re.sub(r"'(?:''|[^'])*'|/\\*[\\s\\S]*?\\*/|--[^\\n]*",
+                    _blank, fragment)
     for found in SQL_TABLE.finditer(masked):
         table = _normalize(found.group(2))
         if not table or table in ("select", "values", "set"):

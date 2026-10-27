@@ -56,6 +56,14 @@ class TableInventoryTests(unittest.TestCase):
         self.assertEqual([("trans_record", "WRITE")],
                          [(x["table"], x["role"]) for x in uses])
 
+    def test_delete_is_a_writer_and_sql_strings_are_not_tables(self):
+        uses, gaps = extract_table_uses(
+            "DELETE FROM trans_record WHERE note = 'FROM fake_table';",
+            "cleanup.sql")
+        self.assertEqual([], gaps)
+        self.assertEqual(["trans_record"], [use["table"] for use in uses])
+        self.assertEqual(["WRITE"], [use["role"] for use in uses])
+
     def test_comments_and_random_literals_do_not_create_table(self):
         text = ('/* SELECT * FROM fake_table */\n'
                 'SELECT * FROM real_table;\n-- UPDATE fake_table SET a=1\n')
