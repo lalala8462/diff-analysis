@@ -33,7 +33,14 @@ def update_review_package(run_dir):
     unified_file = root / "unified_impact_latest.json"
     unified = (json.loads(unified_file.read_text("utf-8"))
                if unified_file.is_file() else {})
-    questions = list(questions) + unified.get("questions", [])
+    resource_file = root / "resource_review_latest.json"
+    resource_review = (json.loads(resource_file.read_text("utf-8"))
+                       if resource_file.is_file() else {})
+    questions = (list(questions) + unified.get("questions", []) +
+                 resource_review.get("questions", []))
+    group_resource = {
+        gid: content.get("fingerprint")
+        for gid, content in resource_review.get("groups", {}).items()}
     group_impact = defaultdict(list)
     for hit in unified.get("findings", []):
         group_impact[hit["group_id"]].append(
@@ -107,7 +114,8 @@ def update_review_package(run_dir):
                             for g in related)
         fingerprint = _hash([q["id"], q.get("change_ids"), related, membership,
                              goal_refs, q.get("path_edge_ids", []),
-                             sorted((g, group_impact[g]) for g in related)])
+                             sorted((g, group_impact[g]) for g in related),
+                             sorted((g, group_resource.get(g)) for g in related)])
         last = old.get(q["id"])
         unchanged = bool(last and last.get("dependency_fingerprint") == fingerprint)
         if unchanged:
@@ -138,6 +146,17 @@ def update_review_package(run_dir):
                                          "kind": "CONTRACT", "project": ledger["project"],
                                          "side": side, "sha": sha, "path": p,
                                          "status": "NEEDS_EVIDENCE_OR_REVIEW"})
+        if q.get("kind") == "RESOURCE_CONSUMER":
+            for item in q.get("consumer_locations", [])[:30]:
+                path = item.get("path")
+                if isinstance(path, str):
+                    request_plan.append({
+                        "question_id": q["id"], "kind": "RESOURCE_CONSUMER",
+                        "project": q["consumer_project"], "side": "HEAD",
+                        "sha": q["consumer_sha"], "path": path,
+                        "line_start": item.get("start"),
+                        "line_end": item.get("end"),
+                        "status": "NEEDS_EVIDENCE_OR_REVIEW"})
         node = q.get("consumer_node")
         if isinstance(node, str) and node.startswith("method|"):
             parts = node.split("|", 4)
@@ -158,6 +177,7 @@ def update_review_package(run_dir):
         group: _hash([
             sorted(cids), sorted(group_units.get(group, [])),
             sorted(group_impact[group]),
+            group_resource.get(group),
             sorted((q["id"], q["dependency_fingerprint"])
                    for q in enriched if group in q.get("group_ids", []))])
         for group, cids in groups.items()}

@@ -196,9 +196,12 @@ def recompute_review(run_dir):
     from .unified_pipeline import rebuild_unified
     unified = rebuild_unified(root, units=by_diff,
                               affected=set(revision["affected_group_ids"]))
+    from .resource_review import refresh_resource_review
+    resource = refresh_resource_review(root, release, units=by_diff,
+                                       affected=set(revision["affected_group_ids"]))
     from .revision_pipeline import update_review_package
     package = update_review_package(root)
-    return {"unified": unified, "review_package": package, "revision": revnum, "impact_findings": len(impacts),
+    return {"unified": unified, "resource": resource, "review_package": package, "revision": revnum, "impact_findings": len(impacts),
             "direct_group_checks": len(checks),
             "recomputed_groups": recomputed,
             "reused_groups": reused, "coverage_gaps": len(gaps),

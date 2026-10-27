@@ -9,6 +9,7 @@ from .gitops import git, check_sha
 from .architecture_sources import default_projects, isolate_specs, source_name
 from .sdk_contracts import analyze_contract_uses
 from .database_inventory import analyze_table_impacts
+from .shared_resources import analyze_shared_resources
 
 
 def _text(node, name):
@@ -267,6 +268,9 @@ def analyze(specs, ledgers, manifest=None):
     database = analyze_table_impacts(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'table_snapshots')
+    shared = analyze_shared_resources(
+        entries, ledgers,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'shared_resources')
     contract = analyze_contract_uses(
         sdks, entries, snapshots, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'sdk_contract_source')
@@ -275,6 +279,7 @@ def analyze(specs, ledgers, manifest=None):
     return {'sdks': sdks, 'alerts': alerts,
             'contract_changes': contract['changes'],
             'contract_impacts': contract['impacts'],
-            'database': database, 'gaps': sorted(set(gaps)),
+            'database': database, 'shared_resources': shared,
+            'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
                           'branch': i.get('branch')} for p, i in entries.items()]}

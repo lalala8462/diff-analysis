@@ -520,22 +520,48 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         from .human_report import write_html
         dependency_scope = write_html(root, release, specs, reviews, project_registry)
         database = dependency_scope.get('database', {})
+        shared = dependency_scope.get('shared_resources', {})
         (root / 'database_impact_latest.json').write_text(
             json.dumps(database, ensure_ascii=False, indent=2), encoding='utf-8')
+        (root / 'shared_resource_latest.json').write_text(
+            json.dumps(shared, ensure_ascii=False, indent=2), encoding='utf-8')
+        from .resource_review import refresh_resource_review
+        resource_summary = refresh_resource_review(root, release)
+        # The initial review package was built before report enrichment; refresh
+        # it now so resource questions and fingerprints are present immediately.
+        from .revision_pipeline import update_review_package
+        refreshed_review = update_review_package(root)
+        resource_summary["review_questions"] = refreshed_review["questions"]
+        with (root / 'report.md').open('a', encoding='utf-8') as handle:
+            handle.write('\n## 跨资源静态影响候选\n\n')
+            handle.write('资源归组见 [resource_impact_latest.json](resource_impact_latest.json)；'
+                         '人工修订归属见 [resource_review_latest.json](resource_review_latest.json)。'
+                         '同名不能确认运行时数据库、Redis 或 Spring/反射绑定。\n')
+        with (root / 'ai_review.md').open('a', encoding='utf-8') as handle:
+            handle.write('\n## 固定版本资源关联\n\n'
+                         '资源候选与覆盖缺口见 resource_impact_latest.json；'
+                         '按人工分组复核的问题见 resource_review_latest.json。'
+                         '不得将静态名称匹配当成真实部署或缺陷。\n')
         scope_summary = {'projects': dependency_scope['projects'], 'gaps': dependency_scope['gaps'],
                          'sdk_candidates': len(dependency_scope['sdks']),
                          'alerts': len(dependency_scope['alerts']),
                          'table_candidates': len(database.get('impacts', [])),
                          'table_index_gaps': len(database.get('omissions', [])),
+                         'shared_resource_candidates': len(shared.get('impacts', [])),
+                         'shared_resource_gaps': len(shared.get('omissions', [])),
+                         'resource_review': resource_summary,
                          'human_priority_count': dependency_scope['human_priority_count']}
         (root / 'dependency_scope.json').write_text(
             json.dumps(scope_summary, ensure_ascii=False, indent=2), encoding='utf-8')
         if manifest is not None:
-            stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json', 'database_impact_latest.json'])
+            stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json', 'database_impact_latest.json',
+                                                            'shared_resource_latest.json', 'resource_impact_latest.json',
+                                                            'resource_review_latest.json'])
             stage_manifest['dependency_scan'] = {
-                'status': 'PARTIAL' if scope_summary['gaps'] or scope_summary['table_index_gaps'] else 'COMPLETE',
+                'status': 'PARTIAL' if scope_summary['gaps'] or scope_summary['table_index_gaps'] or scope_summary['shared_resource_gaps'] else 'COMPLETE',
                 'output_ref': 'dependency_scope.json',
-                'gap_count': len(scope_summary['gaps']) + scope_summary['table_index_gaps']}
+                'gap_count': (len(scope_summary['gaps']) + scope_summary['table_index_gaps'] +
+                                            scope_summary['shared_resource_gaps'])}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         failure = {"project": "(batch)", "stage": "HUMAN_HTML",
                    "error_type": type(exc).__name__, "reason": str(exc)[:500]}
