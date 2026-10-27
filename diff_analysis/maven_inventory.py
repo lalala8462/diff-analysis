@@ -8,6 +8,7 @@ from pathlib import Path
 from .gitops import git, check_sha
 from .architecture_sources import default_projects, isolate_specs, source_name
 from .sdk_contracts import analyze_contract_uses
+from .database_inventory import analyze_table_impacts
 
 
 def _text(node, name):
@@ -261,6 +262,11 @@ def analyze(specs, ledgers, manifest=None):
             for m in inv['modules']:
                 if m['parent_unresolved']:
                     gaps.append(project + ' ' + side + ' / ' + m['path'] + '：外部或无法解析的父 POM')
+    # Cross-project table use is independent of Maven dependencies; keep it
+    # in its own versioned inventory, alongside the dependency report scope.
+    database = analyze_table_impacts(
+        entries, ledgers,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'table_snapshots')
     contract = analyze_contract_uses(
         sdks, entries, snapshots, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'sdk_contract_source')
@@ -268,6 +274,7 @@ def analyze(specs, ledgers, manifest=None):
                 for item in contract['gaps'])
     return {'sdks': sdks, 'alerts': alerts,
             'contract_changes': contract['changes'],
-            'contract_impacts': contract['impacts'], 'gaps': sorted(set(gaps)),
+            'contract_impacts': contract['impacts'],
+            'database': database, 'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
                           'branch': i.get('branch')} for p, i in entries.items()]}

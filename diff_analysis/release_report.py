@@ -519,18 +519,23 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
     try:
         from .human_report import write_html
         dependency_scope = write_html(root, release, specs, reviews, project_registry)
+        database = dependency_scope.get('database', {})
+        (root / 'database_impact_latest.json').write_text(
+            json.dumps(database, ensure_ascii=False, indent=2), encoding='utf-8')
         scope_summary = {'projects': dependency_scope['projects'], 'gaps': dependency_scope['gaps'],
                          'sdk_candidates': len(dependency_scope['sdks']),
                          'alerts': len(dependency_scope['alerts']),
+                         'table_candidates': len(database.get('impacts', [])),
+                         'table_index_gaps': len(database.get('omissions', [])),
                          'human_priority_count': dependency_scope['human_priority_count']}
         (root / 'dependency_scope.json').write_text(
             json.dumps(scope_summary, ensure_ascii=False, indent=2), encoding='utf-8')
         if manifest is not None:
-            stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json'])
+            stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json', 'database_impact_latest.json'])
             stage_manifest['dependency_scan'] = {
-                'status': 'PARTIAL' if scope_summary['gaps'] else 'COMPLETE',
+                'status': 'PARTIAL' if scope_summary['gaps'] or scope_summary['table_index_gaps'] else 'COMPLETE',
                 'output_ref': 'dependency_scope.json',
-                'gap_count': len(scope_summary['gaps'])}
+                'gap_count': len(scope_summary['gaps']) + scope_summary['table_index_gaps']}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         failure = {"project": "(batch)", "stage": "HUMAN_HTML",
                    "error_type": type(exc).__name__, "reason": str(exc)[:500]}

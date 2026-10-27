@@ -169,6 +169,37 @@ class HumanReportTests(unittest.TestCase):
             self.assertTrue(any(x['kind'] == 'SDK自身版本' for x in same_version_result['alerts']))
             self.assertFalse(any(x['kind'] == '变化类引用SDK' for x in same_version_result['alerts']))
 
+    def test_table_impact_html_for_unchanged_consumer(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            producer = setup(root / 'adpts')
+            consumer = setup(root / 'webapi')
+            mapper = 'src/main/resources/TransMapper.xml'
+            base = commit(producer, mapper,
+                          '<mapper><select id="get">SELECT * FROM trans_record WHERE state=0</select></mapper>',
+                          'PAY-1 base')
+            head = commit(producer, mapper,
+                          '<mapper><select id="get">SELECT * FROM trans_record WHERE state=1</select></mapper>',
+                          'PAY-1 update')
+            consumer_sha = commit(consumer, 'src/dao.sql',
+                                  'SELECT * FROM trans_record;', 'consumer')
+            registry_file = root / 'projects.json'
+            registry_file.write_text(json.dumps({'projects': [
+                {'project': 'rhf/webapi', 'repo': str(consumer),
+                 'revision': consumer_sha}]}), encoding='utf-8')
+            specs = [(producer, 'rhf/adpts', base, head)]
+            ledgers = [final_diff_ledger(*specs[0])]
+            report = root / 'report'
+            report.mkdir()
+            outcome = write_html(report, {'ledgers': ledgers}, specs, [],
+                                 registry_file)
+            page = (report / 'report.html').read_text('utf-8')
+            self.assertEqual(1, len(outcome['database']['impacts']))
+            self.assertIn('跨项目数据库表：trans_record', page)
+            self.assertIn('rhf/webapi', page)
+            self.assertIn(ledgers[0]['final_changes'][0]['id'], page)
+            self.assertIn('TABLE_NAME_ONLY_UNCONFIRMED', page)
+
     def test_local_parent_and_fixed_consumer_registry(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
