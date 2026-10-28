@@ -536,8 +536,9 @@ def write_html(root, release, specs, reviews, manifest=None):
                     esc(candidate.get('project')), esc(candidate.get('change_id'))))
         out.append('<p>该最终差异直接命中外部入口，或可通过一跳显式类型调用关联到外部入口；不要求先还原完整调用链。</p>')
         for surface in candidate.get('surfaces', []):
-            out.append('<p><b>%s</b>　%s　%s:%s　%s　<code>%s</code></p>' %
+            out.append('<p><b>%s [%s]</b>　%s　%s:%s　%s　<code>%s</code></p>' %
                        (esc(surface.get('external_kind')),
+                        esc(surface.get('priority', 'UNKNOWN')),
                         esc('旧版入口' if surface.get('side') == 'base' else '新版入口'),
                         esc(surface.get('path')), esc(surface.get('line')),
                         esc((surface.get('binding') or '') + '；' + (surface.get('reason') or '')),
@@ -655,8 +656,9 @@ def write_html(root, release, specs, reviews, manifest=None):
             if candidate.get('external_influence'):
                 out.append('<p><b>外部影响面：</b>该资源变更对应的代码差异位于外部入口候选中：</p>')
                 for surface in candidate['external_influence']:
-                    out.append('<p>%s　%s:%s　%s.%s　%s</p>' %
+                    out.append('<p>%s [%s]　%s:%s　%s.%s　%s</p>' %
                                (esc(surface.get('external_kind')),
+                                esc(surface.get('priority', 'UNKNOWN')),
                                 esc(surface.get('path')), esc(surface.get('line')),
                                 esc(surface.get('method')), esc(surface.get('side')),
                                 esc((surface.get('binding') or '') + '；' +
