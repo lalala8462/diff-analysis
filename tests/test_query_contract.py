@@ -124,6 +124,41 @@ class QueryContractTests(unittest.TestCase):
             item["kind"] == "PAGEHELPER_DYNAMIC_SORT"
             for item in dynamic))
 
+    def test_sort_field_getter_requires_sort_sink(self):
+        files = {
+            "RecoMapper.java": (
+                "interface RecoMapper { void query(QueryParams params); }\n"),
+            "RecoService.java": (
+                "class RecoService {\n"
+                "  RecoMapper mapper;\n"
+                "  void query(QueryParams params) {\n"
+                "    PageHelper.orderBy(params.getSortField());\n"
+                "    mapper.query(params);\n"
+                "  }\n"
+                "}\n"),
+        }
+        declaration = {
+            "class": "RecoMapper", "method": "query",
+            "namespace": "RecoMapper", "path": "RecoMapper.java", "line": 1}
+        caller = mapper_callers(files, declaration)[0]
+        direct, dynamic = caller_sort_evidence(
+            files["RecoService.java"], "RecoService.java", caller, "state")
+        self.assertEqual(direct, [])
+        self.assertTrue(any(
+            item["kind"] == "DYNAMIC_SORT_FIELD_GETTER"
+            for item in dynamic))
+
+        unrelated = files["RecoService.java"].replace(
+            "PageHelper.orderBy(params.getSortField());",
+            "logger.info(params.getSortField());")
+        files["RecoService.java"] = unrelated
+        caller = mapper_callers(files, declaration)[0]
+        _, dynamic = caller_sort_evidence(
+            unrelated, "RecoService.java", caller, "state")
+        self.assertFalse(any(
+            item["kind"] == "DYNAMIC_SORT_FIELD_GETTER"
+            for item in dynamic))
+
     def test_external_http_sort_capability_without_frontend_trace(self):
         files = {
             "src/x/RecoMapper.java": (
