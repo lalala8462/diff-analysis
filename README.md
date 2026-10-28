@@ -154,10 +154,11 @@ review-status                       查看分歧和待重审结论
 
 1. **report.html、stage_manifest.json、dependency_scope.json**：人工重点、比较及取证范围、阶段状态和覆盖缺口。
 2. **questions.md / questions.json、group_reports/、evidence/D-*.md**：问题、固定版本差异及代码窗口。
-3. **unified_graph_latest.json / unified_impact_latest.json**：版本关系边、反向影响与遗漏；导入协议绑定前仍保留 Java 静态图。
-4. **contract_context_latest.json、supplements/**：执行相应命令后生成的完整方法、契约及字段、分支候选；读取受固定 Git SHA、轮次和字节预算约束。
-5. **review_package_latest.json、review_state.json、revisions/**：当前问题/证据计划、人工归属、预期目标、判断与版本化快照。
-6. **ai_review.md**：用于工具外 AI 的离线资料；导出成功**不表示 AI 已完整阅读**。
+3. **query_contract_latest.json、external_influence_latest.json、resource_impact_latest.json**：查询输出/动态排序风险、直接或一跳外部影响面，以及统一 SDK/数据库/Redis 等资源候选。
+4. **unified_graph_latest.json / unified_impact_latest.json**：版本关系边、反向影响与遗漏；导入协议绑定前仍保留 Java 静态图。
+5. **contract_context_latest.json、supplements/**：执行相应命令后生成的完整方法、契约及字段、分支候选；读取受固定 Git SHA、轮次和字节预算约束。
+6. **review_package_latest.json、review_state.json、resource_review_latest.json、revisions/**：当前问题/证据计划、人工归属、资源外部影响证据、预期目标、判断与版本化快照。
+7. **ai_review.md**：用于工具外 AI 的离线资料；导出成功**不表示 AI 已完整阅读**。
 
 ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和分析事实。人工修订只更新派生资料，**不覆盖**原净差异。向导和比较命令只在本次独立运行目录生成报告与证据，不再生成旧版兼容报告。
 
