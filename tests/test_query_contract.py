@@ -58,13 +58,19 @@ class QueryContractTests(unittest.TestCase):
     def test_mapper_to_caller_and_dynamic_sort_binding(self):
         files = {
             "src/x/RecoMapper.java": (
-                "package x; public interface RecoMapper { "
-                "java.util.List queryRecoRecords(BasePageQueryParams params); }"),
+                "package x;\n"
+                "public interface RecoMapper {\n"
+                "    java.util.List queryRecoRecords(BasePageQueryParams params);\n"
+                "}\n"),
             "src/x/RecoService.java": (
-                "package x; class RecoService { RecoMapper recoMapper; "
-                "void query(BasePageQueryParams params) { "
-                "PageHelper.startPage(1, 20, params.getOrderBy()); "
-                "recoMapper.queryRecoRecords(params); } }"),
+                "package x;\n"
+                "class RecoService {\n"
+                "    RecoMapper recoMapper;\n"
+                "    void query(BasePageQueryParams params) {\n"
+                "        PageHelper.startPage(1, 20, params.getOrderBy());\n"
+                "        recoMapper.queryRecoRecords(params);\n"
+                "    }\n"
+                "}\n"),
         }
         declaration = mapper_declaration(
             files, "x.RecoMapper", "queryRecoRecords")
