@@ -157,7 +157,7 @@ def one_hop_external_surfaces(files, text, path, span):
     # Same-class helper calls are common in controllers/listeners. Treat only
     # one lexical call hop as evidence; do not recurse through helper chains.
     call_pattern = re.compile(
-        r'\\b(?:this\\s*\\.\\s*)?' + re.escape(span["name"]) + r'\\s*\\(')
+        r'\b(?:this\s*\.\s*)?' + re.escape(span["name"]) + r'\s*\(')
     for caller_span in java_method_spans(text):
         if caller_span["start"] == span["start"]:
             continue
