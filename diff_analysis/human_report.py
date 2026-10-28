@@ -370,6 +370,9 @@ def write_html(root, release, specs, reviews, manifest=None):
     contract_impacts = sdk.get('contract_impacts', [])
     table_result = sdk.get('database', {})
     table_impacts = table_result.get('impacts', [])
+    query_contract = sdk.get('query_contract', {})
+    query_candidates = query_contract.get('candidates', [])
+    _write_json(root / 'query_contract_latest.json', query_contract)
     shared_result = sdk.get('shared_resources', {})
     shared_impacts = shared_result.get('impacts', [])
     unified_resources = normalized_candidates(sdk)
@@ -396,7 +399,7 @@ def write_html(root, release, specs, reviews, manifest=None):
     for candidate in unified_resources['candidates']:
         key = (candidate['producer_project'], candidate['consumer_project'])
         resource_groups[key].append(candidate)
-    sdk['human_priority_count'] = len(alerts) + len(resource_groups)
+    sdk['human_priority_count'] = len(alerts) + len(resource_groups) + len(query_candidates)
     sdk['resource_group_count'] = len(resource_groups)
     sdk['resource_candidate_count'] = len(unified_resources['candidates'])
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
@@ -426,6 +429,23 @@ def write_html(root, release, specs, reviews, manifest=None):
     out.append('<p class="gap">仅检查本次输入及列出的取证项目；默认分支不代表实际部署。间接依赖、外部父 POM、反射和动态调用可能未覆盖。</p>')
     out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
     out.append('<section><h2>优先确认 <span class="badge">%d 项</span></h2>' % sdk['human_priority_count'])
+    for candidate in query_candidates:
+        out.append('<article class="card alert"><b>查询结果列与排序参数契约候选：%s / %s / %s</b>' %
+                   (esc(candidate['project']), esc(candidate['select_id']), esc(candidate['deleted_column'])))
+        out.append('<p>旧版 %s → 新版 %s；Mapper：%s，namespace：%s</p>' %
+                   (esc(candidate['base_sha']), esc(candidate['head_sha']),
+                    esc(candidate['path']), esc(candidate['namespace'])))
+        out.append('<p>SELECT 输出列消失，但以下固定版本中存在同名排序引用。仅为静态候选，不证明 SQL ORDER BY 一定失效或引用已绑定该 Mapper。</p>')
+        out.append('<p>旧版 SQL：<code>%s</code>；新版 SQL：<code>%s</code></p>' %
+                   (esc(candidate['old']['sql_excerpt']), esc(candidate['new']['sql_excerpt'])))
+        for ref in candidate['references']:
+            out.append('<p>%s @ %s / %s:%s <code>%s</code></p>' %
+                       (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
+                        esc(ref['line']), esc(ref['evidence'])))
+        out.append('</article>')
+    if query_contract.get('omissions'):
+        out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
+                   len(query_contract['omissions']))
     panels = []
     for index, a in enumerate(alerts):
         if a['kind'] == '项目中的多工单交叉':
