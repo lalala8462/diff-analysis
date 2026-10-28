@@ -88,6 +88,13 @@ class QueryContractTests(unittest.TestCase):
         amount = next(item for item in items if item["output"] == "amount")
         self.assertEqual(amount["kind"], "EXPRESSION_ALIAS")
 
+    def test_mysql_backtick_identifiers(self):
+        items, gaps = projection_details(
+            "SELECT `t`.`state`, `id` FROM `records` t")
+        self.assertEqual(gaps, [])
+        self.assertEqual(
+            sorted(item["output"] for item in items), ["id", "state"])
+
     def test_mapper_to_caller_and_dynamic_sort_binding(self):
         files = {
             "src/x/RecoMapper.java": (
