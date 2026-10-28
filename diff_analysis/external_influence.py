@@ -219,18 +219,19 @@ def mybatis_external_surfaces(files, statement):
     return list(unique.values())
 
 
-def _snapshot(entry, project, side, paths, cache_dir):
+def _snapshot(entry, project, side, paths, cache_dir, include_all_java=False):
     sha = entry.get(side)
     if not sha:
         return {}, []
     index, _ = source_snapshot_index(
         entry["repo"], project, sha, Path(cache_dir) / "indexes",
-        extensions={".java"}, rules_version=VERSION, max_files=MAX_FILES)
+        extensions={".java", ".xml"}, rules_version=VERSION, max_files=MAX_FILES)
     omissions = [{"project": project, "side": side, **gap}
                  for gap in index["omissions"]]
     files = {}
     for item in index["files"]:
-        if item["path"] not in paths:
+        if (item["path"] not in paths and
+                not (include_all_java and item["path"].endswith(".java"))):
             continue
         raw = git(entry["repo"], "cat-file", "blob", item["blob_sha"])
         if len(raw) > MAX_FILE_BYTES:
@@ -243,26 +244,28 @@ def _snapshot(entry, project, side, paths, cache_dir):
 
 
 def analyze_external_influence(entries, ledgers, cache_dir):
-    """Annotate final changes that directly intersect inbound external surfaces."""
+    """Annotate final diffs using direct or one-hop inbound external surfaces."""
     candidates, omissions = [], []
     for ledger in ledgers:
         project = ledger["project"]
         entry = entries.get(project)
         if not entry:
             continue
-        java_paths = set()
+        changed_paths = set()
         for change in ledger.get("final_changes", []):
             for path in (change.get("path"), change.get("old_path")):
-                if path and path.endswith(".java"):
-                    java_paths.add(path)
-        if not java_paths:
+                if path and (path.endswith(".java") or path.endswith(".xml")):
+                    changed_paths.add(path)
+        if not changed_paths:
             continue
         try:
             base, gaps = _snapshot(
-                entry, project, "base", java_paths, cache_dir)
+                entry, project, "base", changed_paths, cache_dir,
+                include_all_java=True)
             omissions.extend(gaps)
             head, gaps = _snapshot(
-                entry, project, "head", java_paths, cache_dir)
+                entry, project, "head", changed_paths, cache_dir,
+                include_all_java=True)
             omissions.extend(gaps)
         except (OSError, RuntimeError, ValueError) as exc:
             omissions.append({
@@ -271,9 +274,6 @@ def analyze_external_influence(entries, ledgers, cache_dir):
             continue
 
         for change in ledger.get("final_changes", []):
-            if not (change.get("path", "").endswith(".java") or
-                    change.get("old_path", "").endswith(".java")):
-                continue
             observations = []
             for side, path, source, rng in (
                     ("base", change.get("old_path"), base,
@@ -283,39 +283,72 @@ def analyze_external_influence(entries, ledgers, cache_dir):
                 text = source.get(path or "")
                 if not text:
                     continue
-                for span in java_method_spans(text):
-                    start_line = _line(text, span["start"])
-                    end_line = _line(text, max(span["start"], span["end"] - 1))
-                    if not _overlap(rng, start_line, end_line):
-                        continue
-                    for item in classify_method(text, path, span):
-                        observations.append({"side": side, **item})
+                if path.endswith(".java"):
+                    for span in java_method_spans(text):
+                        start_line = _line(text, span["start"])
+                        end_line = _line(
+                            text, max(span["start"], span["end"] - 1))
+                        if not _overlap(rng, start_line, end_line):
+                            continue
+                        for item in one_hop_external_surfaces(
+                                source, text, path, span):
+                            observations.append({"side": side, **item})
+                elif path.endswith(".xml"):
+                    for statement in mybatis_statements(text, path):
+                        if not _overlap(
+                                rng, statement["line"], statement["end_line"]):
+                            continue
+                        for item in mybatis_external_surfaces(
+                                source, statement):
+                            observations.append({
+                                "side": side,
+                                "mybatis_statement": {
+                                    "namespace": statement["namespace"],
+                                    "id": statement["id"],
+                                    "operation": statement["operation"],
+                                    "path": statement["path"],
+                                    "line": statement["line"]},
+                                **item})
+
             unique = {}
             for item in observations:
-                key = (item["side"], item["external_kind"], item["path"],
-                       item["line"], item["method"])
+                key = (
+                    item["side"], item.get("binding"),
+                    item["external_kind"], item["path"],
+                    item["line"], item["method"])
                 unique[key] = item
-            if unique:
-                candidates.append({
-                    "project": project,
-                    "change_id": change["id"],
-                    "path": change.get("path"),
-                    "old_path": change.get("old_path"),
-                    "base_sha": ledger["base"],
-                    "head_sha": ledger["head"],
-                    "surfaces": sorted(
-                        unique.values(),
-                        key=lambda item: (
-                            item["side"], item["external_kind"],
-                            item["path"], item["line"])),
-                    "priority": "HIGH",
-                    "status": "DIRECT_EXTERNAL_SURFACE_CANDIDATE"})
+            if not unique:
+                continue
+            surfaces = sorted(
+                unique.values(),
+                key=lambda item: (
+                    item["side"], item.get("binding", ""),
+                    item["external_kind"], item["path"], item["line"]))
+            high_bindings = {
+                "DIRECT_CHANGED_METHOD",
+                "MYBATIS_DIRECT_CALLER_EXTERNAL"}
+            priority = (
+                "HIGH" if any(
+                    item.get("binding") in high_bindings
+                    for item in surfaces)
+                else "MEDIUM")
+            candidates.append({
+                "project": project,
+                "change_id": change["id"],
+                "path": change.get("path"),
+                "old_path": change.get("old_path"),
+                "base_sha": ledger["base"],
+                "head_sha": ledger["head"],
+                "surfaces": surfaces,
+                "priority": priority,
+                "status": "EXTERNAL_INFLUENCE_CANDIDATE"})
 
     return {
         "schema_version": VERSION,
         "candidates": candidates,
         "omissions": omissions,
         "limitation": (
-            "Direct inbound surface classification only. Absence of a candidate "
-            "does not prove a change is unreachable from external callers; full "
-            "call-chain reconstruction is intentionally not required.")}
+            "Only direct inbound surfaces and one explicit typed caller hop are "
+            "checked. Absence does not prove external callers cannot influence "
+            "the change; whole-program path reconstruction is intentionally not "
+            "a prerequisite for raising risk.")}
