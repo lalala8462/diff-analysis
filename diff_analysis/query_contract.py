@@ -668,7 +668,7 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         priority = 'HIGH'
                     elif bound_dynamic and http_frontend_refs:
                         status = 'BOUND_HTTP_FRONTEND_DYNAMIC_SORT'
-                        priority = 'HIGH'
+                        priority = 'MEDIUM'
                     elif bound_dynamic:
                         status = 'BOUND_DYNAMIC_SORT_PARAMETER_UNRESOLVED'
                         priority = 'MEDIUM'
