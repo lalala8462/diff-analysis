@@ -569,8 +569,20 @@ def _change_ids(ledger, path, old_select, new_select):
 
 def analyze_query_contracts(entries, ledgers, cache_dir):
     snapshots, omissions = {}, []
+    changed_xml = {}
+    for ledger in ledgers:
+        paths = set()
+        for change in ledger.get('final_changes', []):
+            for path in (change.get('path'), change.get('old_path')):
+                if path and path.endswith('.xml'):
+                    paths.add(path)
+        changed_xml[ledger['project']] = paths
+
     for project, entry in sorted(entries.items()):
-        for side in ('base', 'head'):
+        # Consumer evidence only needs HEAD. BASE content is required solely for
+        # changed MyBatis XML in projects that are part of this comparison.
+        sides = ('base', 'head') if project in changed_xml else ('head',)
+        for side in sides:
             sha = entry.get(side)
             if not sha:
                 continue
@@ -582,6 +594,8 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                                  for gap in index['omissions'])
                 files = {}
                 for item in index['files']:
+                    if side == 'base' and item['path'] not in changed_xml.get(project, set()):
+                        continue
                     raw = git(entry['repo'], 'cat-file', 'blob', item['blob_sha'])
                     if len(raw) > MAX_FILE_BYTES:
                         omissions.append({'project': project, 'side': side,
