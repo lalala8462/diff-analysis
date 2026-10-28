@@ -1,8 +1,9 @@
 """Static query contract regression tests."""
 import unittest
 from diff_analysis.query_contract import (
-    caller_sort_evidence, controller_endpoints, endpoint_frontend_references,
-    mapper_callers, mapper_declaration, projection, scan_references, selects)
+    _column_change_assessment, caller_sort_evidence, controller_endpoints,
+    endpoint_frontend_references, mapper_callers, mapper_declaration,
+    projection, projection_details, scan_references, selects)
 
 
 class QueryContractTests(unittest.TestCase):
@@ -54,6 +55,38 @@ class QueryContractTests(unittest.TestCase):
         found = scan_references(vue, "Check.vue", "state")
         self.assertEqual(len(found), 1)
         self.assertEqual(found[0]["kind"], "FRONTEND_SORT_FIELD")
+
+    def test_projection_metadata_and_alias_rename_assessment(self):
+        old_items, old_gaps = projection_details(
+            "SELECT CASE WHEN state = 1 THEN 1 ELSE 0 END AS state, id FROM records")
+        new_items, new_gaps = projection_details(
+            "SELECT CASE WHEN state = 1 THEN 1 ELSE 0 END AS allState, id FROM records")
+        self.assertEqual(old_gaps, [])
+        self.assertEqual(new_gaps, [])
+        old_state = next(item for item in old_items if item["output"] == "state")
+        self.assertEqual(old_state["kind"], "EXPRESSION_ALIAS")
+        kind, replacement, risk = _column_change_assessment(
+            old_state, new_items)
+        self.assertEqual(kind, "OUTPUT_ALIAS_RENAMED")
+        self.assertEqual(replacement, "allstate")
+        self.assertEqual(
+            risk, "REMOVED_ALIAS_OR_EXPRESSION_HAS_HIGHER_ORDER_RISK")
+
+    def test_simple_column_may_remain_orderable(self):
+        old_items, _ = projection_details("SELECT state, id FROM records")
+        new_items, _ = projection_details("SELECT id FROM records")
+        state = next(item for item in old_items if item["output"] == "state")
+        kind, replacement, risk = _column_change_assessment(state, new_items)
+        self.assertEqual(kind, "OUTPUT_COLUMN_REMOVED")
+        self.assertIsNone(replacement)
+        self.assertEqual(risk, "BASE_COLUMN_MAY_STILL_BE_ORDERABLE")
+
+    def test_implicit_expression_alias(self):
+        items, gaps = projection_details(
+            "SELECT SUM(total) amount, id FROM records")
+        self.assertEqual(gaps, [])
+        amount = next(item for item in items if item["output"] == "amount")
+        self.assertEqual(amount["kind"], "EXPRESSION_ALIAS")
 
     def test_mapper_to_caller_and_dynamic_sort_binding(self):
         files = {
