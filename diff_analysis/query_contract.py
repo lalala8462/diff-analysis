@@ -316,8 +316,62 @@ def _brace_end(masked, opening):
     return None
 
 
+def _paren_end(text, opening):
+    depth = 0
+    for pos in range(opening, len(text)):
+        if text[pos] == '(':
+            depth += 1
+        elif text[pos] == ')':
+            depth -= 1
+            if depth == 0:
+                return pos
+    return None
+
+
+def _split_java_parameters(raw):
+    parts, begin = [], 0
+    angle = paren = bracket = 0
+    for index, char in enumerate(raw):
+        if char == '<':
+            angle += 1
+        elif char == '>':
+            angle = max(0, angle - 1)
+        elif char == '(':
+            paren += 1
+        elif char == ')':
+            paren = max(0, paren - 1)
+        elif char == '[':
+            bracket += 1
+        elif char == ']':
+            bracket = max(0, bracket - 1)
+        elif char == ',' and not angle and not paren and not bracket:
+            parts.append(raw[begin:index].strip())
+            begin = index + 1
+    tail = raw[begin:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _method_parameters(raw):
+    result = {}
+    for part in _split_java_parameters(raw):
+        cleaned = re.sub(
+            r'@[A-Za-z_][\w.]*\s*(?:\([^)]*\))?\s*', '', part)
+        cleaned = re.sub(r'\b(?:final|volatile|transient)\b\s*', '', cleaned)
+        match = re.search(r'([A-Za-z_]\w*)\s*$', cleaned)
+        if not match:
+            continue
+        name = match.group(1)
+        type_text = cleaned[:match.start()].strip()
+        type_text = type_text.replace('...', '[]').strip()
+        if type_text:
+            result[name] = type_text.split('.')[-1]
+    return result
+
+
 def java_method_spans(text):
-    """Return conservative Java method ranges, excluding declarations without bodies."""
+    """Return conservative Java method ranges and parameter types."""
     masked = _mask_java(text)
     pattern = re.compile(
         r'(?m)^[ \t]*(?:@[A-Za-z_][\w.]*[^\n]*\n[ \t]*)*'
@@ -328,9 +382,15 @@ def java_method_spans(text):
     for match in pattern.finditer(masked):
         opening = masked.find('{', match.start(), match.end())
         ending = _brace_end(masked, opening)
+        param_open = masked.find('(', match.end(1), opening)
+        param_close = _paren_end(masked, param_open) if param_open >= 0 else None
+        parameters = (_method_parameters(text[param_open + 1:param_close])
+                      if param_close is not None else {})
         if ending:
-            spans.append({'name': match.group(1), 'start': match.start(),
-                          'end': ending, 'line': _line(text, match.start())})
+            spans.append({
+                'name': match.group(1), 'start': match.start(),
+                'end': ending, 'line': _line(text, match.start()),
+                'parameters': parameters})
     return spans
 
 
