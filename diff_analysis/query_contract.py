@@ -272,15 +272,35 @@ def mapper_declaration(files, namespace, select_id):
     return None
 
 
-def mapper_callers(files, declaration):
-    """Find calls through variables whose declared type is the bound Mapper type."""
-    if not declaration:
+def _declared_callable_types(text):
+    """Primary Java type plus directly implemented/extended interface names."""
+    fqcn, simple = _java_identity(text)
+    if not simple:
         return []
-    mapper_type = declaration['class']
-    method = declaration['method']
+    result = [simple]
+    masked = _mask_java(text)
+    match = re.search(
+        r'\b(?:class|interface)\s+' + re.escape(simple) +
+        r'\b([^\{]*)\{', masked)
+    if match:
+        tail = match.group(1)
+        for clause in re.findall(r'\b(?:implements|extends)\s+([^\{]+)', tail):
+            for item in clause.split(','):
+                name = re.sub(r'<.*', '', item).strip().split('.')[-1]
+                if re.fullmatch(r'[A-Za-z_]\w*', name):
+                    result.append(name)
+    return sorted(set(result))
+
+
+def typed_method_callers(files, type_names, method, binding):
+    """Find calls through variables with one of the requested declared types."""
+    type_names = sorted(set(name for name in type_names if name))
+    if not type_names:
+        return []
     callers = []
+    alternation = '|'.join(re.escape(name) for name in type_names)
     variable_pattern = re.compile(
-        r'\b' + re.escape(mapper_type) +
+        r'\b(?:' + alternation + r')'
         r'(?:\s*<[^;=(){}]+>)?\s+([A-Za-z_]\w*)\b')
     for path, text in files.items():
         if not path.endswith('.java'):
@@ -290,6 +310,8 @@ def mapper_callers(files, declaration):
         if not variables:
             continue
         spans = java_method_spans(text)
+        fqcn, simple = _java_identity(text)
+        callable_types = _declared_callable_types(text)
         for variable in variables:
             call_pattern = re.compile(r'\b' + re.escape(variable) + r'\s*\.\s*' +
                                       re.escape(method) + r'\s*\(')
@@ -301,9 +323,30 @@ def mapper_callers(files, declaration):
                     'caller_method': span['name'] if span else None,
                     'caller_start': span['start'] if span else None,
                     'caller_end': span['end'] if span else None,
-                    'mapper_variable': variable,
-                    'binding': 'DECLARED_MAPPER_TYPE_AND_METHOD_CALL',
+                    'caller_class': simple or None,
+                    'caller_fqcn': fqcn or None,
+                    'caller_types': callable_types,
+                    'target_types': type_names,
+                    'receiver_variable': variable,
+                    'binding': binding,
                     'evidence': text.splitlines()[_line(text, match.start()) - 1].strip()[:250]})
+    unique = {}
+    for item in callers:
+        key = (item['path'], item['line'], item['caller_method'],
+               item['receiver_variable'], tuple(item['target_types']))
+        unique[key] = item
+    return list(unique.values())
+
+
+def mapper_callers(files, declaration):
+    """Find source calls to the namespace-bound Mapper method."""
+    if not declaration:
+        return []
+    callers = typed_method_callers(
+        files, [declaration['class']], declaration['method'],
+        'DECLARED_MAPPER_TYPE_AND_METHOD_CALL')
+    for item in callers:
+        item['mapper_variable'] = item['receiver_variable']
     return callers
 
 
