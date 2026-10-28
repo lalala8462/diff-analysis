@@ -112,8 +112,9 @@ def _projection_parts(sql):
 
 
 def _simple_column(expression):
+    cleaned = expression.strip().replace(chr(96), '')
     match = re.fullmatch(
-        r'(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)', expression.strip())
+        r'(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)', cleaned)
     return match.group(1).lower() if match else None
 
 
@@ -144,7 +145,7 @@ def projection_details(sql):
             continue
         implicit_column = re.fullmatch(
             r'((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s+'
-            r'([A-Za-z_]\w*)', part)
+            r'([A-Za-z_]\w*)', part.replace(chr(96), ''))
         if implicit_column:
             items.append({'output': implicit_column.group(2).lower(),
                           'expression': implicit_column.group(1),
