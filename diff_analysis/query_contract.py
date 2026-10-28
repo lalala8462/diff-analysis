@@ -582,6 +582,7 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
 
                 declaration = mapper_declaration(new, key[0], key[1])
                 callers = mapper_callers(new, declaration)
+                endpoints = controller_endpoints(new, callers)
                 if not declaration:
                     omissions.append({
                         'project': project, 'path': path, 'select': key[1],
@@ -610,6 +611,8 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                             project_refs.extend(scan_references(source, source_path, column))
 
                     frontend_refs = []
+                    http_frontend_refs = endpoint_frontend_references(
+                        snapshots, entries, endpoints, column)
                     # Front-end evidence may live in a separately registered project.
                     # It never upgrades binding strength without HTTP endpoint evidence.
                     for (consumer, side), sources in snapshots.items():
@@ -631,6 +634,9 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         priority = 'HIGH'
                     elif bound_dynamic and parameter_sources:
                         status = 'BOUND_DYNAMIC_SORT_WITH_PARAMETER_SOURCE'
+                        priority = 'HIGH'
+                    elif bound_dynamic and http_frontend_refs:
+                        status = 'BOUND_HTTP_FRONTEND_DYNAMIC_SORT'
                         priority = 'HIGH'
                     elif bound_dynamic:
                         status = 'BOUND_DYNAMIC_SORT_PARAMETER_UNRESOLVED'
@@ -661,10 +667,12 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         'new': current,
                         'mapper_declaration': declaration,
                         'mapper_callers': callers[:MAX_REFERENCES],
+                        'controller_endpoints': endpoints[:MAX_REFERENCES],
                         'bound_sort_references': bound_direct[:MAX_REFERENCES],
                         'dynamic_sort_references': bound_dynamic[:MAX_REFERENCES],
                         'parameter_sort_sources': parameter_sources[:MAX_REFERENCES],
                         'project_references': project_refs[:MAX_REFERENCES],
+                        'http_frontend_references': http_frontend_refs[:MAX_REFERENCES],
                         'frontend_references': frontend_refs[:MAX_REFERENCES],
                         'priority': priority,
                         'status': status,
@@ -676,6 +684,8 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
 
                     for name, values in (
                             ('mapper_callers', callers),
+                            ('controller_endpoints', endpoints),
+                            ('http_frontend_references', http_frontend_refs),
                             ('project_references', project_refs),
                             ('frontend_references', frontend_refs),
                             ('parameter_sort_sources', parameter_sources)):
