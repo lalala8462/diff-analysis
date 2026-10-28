@@ -529,6 +529,15 @@ def caller_sort_evidence(text, path, caller, column):
         item['binding'] = 'SAME_METHOD_AS_MAPPER_CALL'
     dynamic = []
     for match in GET_ORDER.finditer(fragment):
+        getter = match.group(2)
+        if getter != 'getOrderBy':
+            left = max(0, match.start() - 180)
+            right = min(len(fragment), match.end() + 180)
+            window = fragment[left:right]
+            if not re.search(
+                    r'\b(?:PageHelper\s*\.\s*)?(?:startPage|orderBy)\s*\(',
+                    window, re.I):
+                continue
         line = _line(text, start + match.start())
         receiver = match.group(1)
         parameters = caller.get('caller_parameters') or {}
@@ -536,9 +545,9 @@ def caller_sort_evidence(text, path, caller, column):
             text, receiver, start, end)
         dynamic.append({
             'path': path, 'line': line,
-            'kind': ('DYNAMIC_GET_ORDER_BY' if match.group(2) == 'getOrderBy'
+            'kind': ('DYNAMIC_GET_ORDER_BY' if getter == 'getOrderBy'
                      else 'DYNAMIC_SORT_FIELD_GETTER'),
-            'getter': match.group(2),
+            'getter': getter,
             'receiver': receiver,
             'receiver_type': receiver_type,
             'receiver_source': ('METHOD_PARAMETER'
