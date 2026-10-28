@@ -534,13 +534,14 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('<article class="card alert"><b>外部影响面 [%s]：%s / %s</b>' %
                    (esc(candidate.get('priority', 'UNKNOWN')),
                     esc(candidate.get('project')), esc(candidate.get('change_id'))))
-        out.append('<p>该最终差异直接落在可被外部触发的入口方法/服务面上，不要求先还原完整调用链。</p>')
+        out.append('<p>该最终差异直接命中外部入口，或可通过一跳显式类型调用关联到外部入口；不要求先还原完整调用链。</p>')
         for surface in candidate.get('surfaces', []):
             out.append('<p><b>%s</b>　%s　%s:%s　%s　<code>%s</code></p>' %
                        (esc(surface.get('external_kind')),
                         esc('旧版入口' if surface.get('side') == 'base' else '新版入口'),
                         esc(surface.get('path')), esc(surface.get('line')),
-                        esc(surface.get('reason')), esc(surface.get('evidence'))))
+                        esc((surface.get('binding') or '') + '；' + (surface.get('reason') or '')),
+                        esc(surface.get('evidence'))))
         out.append('<p>差异证据：%s</p></article>' % _evidence_link(candidate.get('change_id')))
     panels = []
     for index, a in enumerate(alerts):
@@ -658,7 +659,8 @@ def write_html(root, release, specs, reviews, manifest=None):
                                (esc(surface.get('external_kind')),
                                 esc(surface.get('path')), esc(surface.get('line')),
                                 esc(surface.get('method')), esc(surface.get('side')),
-                                esc(surface.get('reason'))))
+                                esc((surface.get('binding') or '') + '；' +
+                                    (surface.get('reason') or ''))))
             for title, uses in (('变化方源码', candidate['source_uses']),
                                 ('消费者源码', candidate['consumer_uses'])):
                 out.append('<details><summary>%s（%d 处）</summary>' % (title, len(uses)))
@@ -674,7 +676,7 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('</article>')
     if not alerts and not resource_groups and not query_candidates and not external_candidates:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
-    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段；只要后端允许方法/请求参数动态控制 PageHelper/orderBy，即使未发现任何前端字面量，也把删除/改名字段列为风险候选，并区分结果字段缺失与 SQL ORDER BY 合法性。</li><li>外部影响面：不要求解析完整调用链；改动直接落在 HTTP、Dubbo、MQ、WebSocket 等外部入口时，作为独立风险证据，并附加到 SDK、数据库、Redis 等资源候选。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
+    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段；只要后端允许方法/请求参数动态控制 PageHelper/orderBy，即使未发现任何前端字面量，也把删除/改名字段列为风险候选，并区分结果字段缺失与 SQL ORDER BY 合法性。</li><li>外部影响面：不要求解析完整调用链；改动直接命中 HTTP、Dubbo、MQ、WebSocket 等外部入口，或经一跳显式类型调用/Mapper 调用可关联到外部入口时，作为独立风险证据，并附加到 SDK、数据库、Redis 等资源候选。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
     for project in sorted({l['project'] for l, _, _, _ in allfiles}): out.append('<option>' + esc(project) + '</option>')
     out.append('</select><select id="ticket" onchange="filter()"><option value="">全部工单</option>')
