@@ -208,7 +208,7 @@ ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和�
 
 ## 新增：SDK JDK 8 AST 归属、实例配置证据与首页去重（2026-10-28）
 
-本轮把 SDK 使用侧从**仅词法候选**升级为**优先 javac 元素归属**。新增 `diff_analysis/java/SdkBindingScanner.java` 和 `diff_analysis/sdk_ast_bindings.py`：使用完整 JDK 8 的 Java Compiler API，在隔离临时目录中读取 SDK 的固定 BASE/HEAD SHA 与消费者 HEAD SHA 的 Java 源码，执行 `parse/analyze`，禁用注解处理器且不执行 `generate()`、不调用业务构建脚本。对消费侧调用，只有当 Java 符号的 owner、成员类型、名称、参数签名与同一次 javac 分析中 SDK 声明符号相同，并且 SDK 声明落在该变化契约的源码位置时，标注 `JAVAC_ATTRIBUTED_SDK_SOURCE`。无法归属则继续展示原有 `TYPE_SCOPED_LEXICAL_CANDIDATE`，并通过 SDK AST gaps 记录缺失依赖、诊断、预算或工具不可用。SDK 合同变动的来源成员提取目前仍有词法覆盖限制，不支持所有复杂重载与生成源码。
+本轮把 SDK 使用侧从**仅词法候选**升级为**优先 javac 元素归属**。新增 `diff_analysis/java/SdkBindingScanner.java` 和 `diff_analysis/sdk_ast_bindings.py`：使用完整 JDK 8 的 Java Compiler API，在隔离临时目录中读取 SDK 的固定 BASE/HEAD SHA 与消费者 HEAD SHA 的 Java 源码，执行 `parse/analyze`，禁用注解处理器且不执行 `generate()`、不调用业务构建脚本。对消费侧调用，只有当 Java 符号的 owner、成员类型、名称、参数签名与同一次 javac 分析中 SDK 声明符号相同，且 `Trees.getPath(Element)` 确认该符号真正声明在固定 SHA 的 SDK 源文件中、SDK 声明落在该变化契约的源码位置时，才标注 `JAVAC_ATTRIBUTED_SDK_SOURCE`。无法归属则继续展示原有 `TYPE_SCOPED_LEXICAL_CANDIDATE`，并通过 SDK AST gaps 记录缺失依赖、诊断、预算或工具不可用。SDK 合同变动的来源成员提取目前仍有词法覆盖限制，不支持所有复杂重载与生成源码。
 
 **注意：JDK 8 AST 证明的是“使用点归属到本次选定的 SDK 源码符号”，不是 Maven 实际选中的已编译 JAR，不代表生产发布版本或升级兼容性。** 多模块源码、外部依赖、继承/泛型边界、注解生成代码可能导致扫描无法完成。消费者源文件与 SDK 源文件会依据 Git blob 物化到临时目录，原工作区不修改；超过扫描预算会记录缺口。
 

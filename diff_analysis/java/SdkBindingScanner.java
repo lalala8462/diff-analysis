@@ -38,10 +38,13 @@ public final class SdkBindingScanner {
         final String path;
         final Set<String> sdkTypes;
         final boolean provider;
-        Reader(Trees t, CompilationUnitTree u, String p, String sdk, boolean isProvider) {
+        final Path sdkRoot;
+        Reader(Trees t, CompilationUnitTree u, String p, String sdk,
+               boolean isProvider, Path sdkSourceRoot) {
             trees = t; unit = u; path = p;
             sdkTypes = new HashSet<String>(Arrays.asList(sdk.split(",")));
             provider = isProvider;
+            sdkRoot = sdkSourceRoot;
         }
         void record(Tree tree, Element symbol, String kind) {
             if (symbol == null || (provider && !"DECLARATION".equals(kind))) return;
@@ -52,6 +55,22 @@ public final class SdkBindingScanner {
             if (!(type instanceof TypeElement)) return;
             String owner = ((TypeElement)type).getQualifiedName().toString();
             if (!sdkTypes.contains(owner)) return;
+            if (!provider) {
+                // An equal owner name is not sufficient: attribute the exact
+                // javac Element back to a source declaration under this
+                // pinned SDK root. Classpath or consumer-owned shadows cannot
+                // masquerade as producer SDK source bindings.
+                TreePath origin = trees.getPath(symbol);
+                if (origin == null || origin.getCompilationUnit() == null) return;
+                try {
+                    Path declared = Paths.get(
+                        origin.getCompilationUnit().getSourceFile().toUri())
+                        .toAbsolutePath().normalize();
+                    if (!declared.startsWith(sdkRoot)) return;
+                } catch (RuntimeException unsupportedOrigin) {
+                    return;
+                }
+            }
             if (type.asType().getKind() == TypeKind.ERROR ||
                 symbol.asType().getKind() == TypeKind.ERROR) return;
             String methodParams = "";
@@ -144,7 +163,7 @@ public final class SdkBindingScanner {
                 if (!isProvider && !isConsumer) continue;
                 String relative = (isProvider ? sdk : consumer).relativize(path)
                     .toString().replace('\\', '/');
-                new Reader(trees, unit, relative, sdkPrefix, isProvider).scan(unit, null);
+                new Reader(trees, unit, relative, sdkPrefix, isProvider, sdk).scan(unit, null);
             }
             int displayed = 0;
             for (Diagnostic<? extends JavaFileObject> error : errors.getDiagnostics()) {
