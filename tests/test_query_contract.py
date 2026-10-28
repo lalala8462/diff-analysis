@@ -1,9 +1,10 @@
 """Static query contract regression tests."""
 import unittest
 from diff_analysis.query_contract import (
-    _column_change_assessment, caller_sort_evidence, controller_endpoints,
-    endpoint_frontend_references, mapper_callers, mapper_declaration,
-    projection, projection_details, scan_references, selects)
+    _column_change_assessment, _external_sort_capability,
+    _sort_parameter_capability, caller_sort_evidence, controller_endpoints,
+    mapper_callers, mapper_declaration, projection, projection_details,
+    scan_references, selects)
 
 
 class QueryContractTests(unittest.TestCase):
@@ -21,10 +22,8 @@ class QueryContractTests(unittest.TestCase):
 
     def test_deleted_field_sort_reference(self):
         java = 'params.setSortName("state");'
-        vue = 'sortName: "state"'
         self.assertEqual(len(scan_references(java, "Svc.java", "state")), 1)
-        self.assertEqual(len(scan_references(vue, "Check.vue", "state")), 1)
-        self.assertEqual(scan_references('sortName: "allState"', "Check.vue", "state"), [])
+        self.assertEqual(scan_references('setSortName("allState");', "Svc.java", "state"), [])
 
     def test_nested_from_and_function_commas(self):
         sql = ("SELECT (SELECT max(v) FROM inner_t) AS state, "
@@ -49,12 +48,6 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(
             projection("SELECT state stateAlias, id FROM records"),
             (["id", "statealias"], []))
-
-    def test_vue_template_prop(self):
-        vue = '<el-table-column prop="state" sortable="custom" />'
-        found = scan_references(vue, "Check.vue", "state")
-        self.assertEqual(len(found), 1)
-        self.assertEqual(found[0]["kind"], "FRONTEND_SORT_FIELD")
 
     def test_projection_metadata_and_alias_rename_assessment(self):
         old_items, old_gaps = projection_details(
@@ -124,13 +117,14 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(direct, [])
         self.assertTrue(any(
             item["kind"] == "DYNAMIC_GET_ORDER_BY" and
-            item["receiver_type"] == "BasePageQueryParams"
+            item["receiver_type"] == "BasePageQueryParams" and
+            item["receiver_source"] == "METHOD_PARAMETER"
             for item in dynamic))
         self.assertTrue(any(
             item["kind"] == "PAGEHELPER_DYNAMIC_SORT"
             for item in dynamic))
 
-    def test_controller_http_and_frontend_binding(self):
+    def test_external_http_sort_capability_without_frontend_trace(self):
         files = {
             "src/x/RecoMapper.java": (
                 "package x;\n"
@@ -145,6 +139,13 @@ class QueryContractTests(unittest.TestCase):
                 "        PageHelper.startPage(1, 20, params.getOrderBy());\n"
                 "        recoMapper.queryRecoRecords(params);\n"
                 "    }\n"
+                "}\n"),
+            "src/x/BasePageQueryParams.java": (
+                "package x;\n"
+                "class BasePageQueryParams {\n"
+                "    private String sortName;\n"
+                "    private String sortType;\n"
+                "    public String getOrderBy() { return sortName + \" \" + sortType; }\n"
                 "}\n"),
             "src/x/RecoController.java": (
                 "package x;\n"
@@ -166,23 +167,18 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(endpoints[0]["http_method"], "POST")
         self.assertEqual(endpoints[0]["url"], "/reco/query")
 
-        snapshots = {
-            ("backend", "head"): files,
-            ("front", "head"): {
-                "src/api/reco.js": (
-                    'const url = "/reco/query";\n'
-                    'const query = { sortName: "state" };\n')
-            },
-        }
-        entries = {
-            "backend": {"head": "a" * 40},
-            "front": {"head": "b" * 40},
-        }
-        refs = endpoint_frontend_references(
-            snapshots, entries, endpoints, "state")
-        self.assertEqual(len(refs), 1)
-        self.assertEqual(refs[0]["project"], "front")
-        self.assertEqual(refs[0]["binding"], "HTTP_PATH_AND_SORT_FIELD_SAME_FILE")
+        service_source = files["src/x/RecoService.java"]
+        direct, dynamic = caller_sort_evidence(
+            service_source, "src/x/RecoService.java", callers[0], "state")
+        self.assertEqual(direct, [])
+        capability = _sort_parameter_capability(
+            files, "BasePageQueryParams")
+        external = _external_sort_capability(
+            dynamic, endpoints, [capability])
+        self.assertIsNotNone(external)
+        self.assertTrue(external["http_exposed"])
+        self.assertEqual(
+            external["status"], "EXTERNAL_HTTP_DYNAMIC_SORT_CONFIRMED_STATIC")
 
     def test_mapper_namespace_must_match_java_type(self):
         files = {
