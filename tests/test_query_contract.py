@@ -99,7 +99,7 @@ class QueryContractTests(unittest.TestCase):
                 "}\n"),
             "src/x/RecoService.java": (
                 "package x;\n"
-                "class RecoService implements IRecoService {\n"
+                "class RecoService extends BaseService implements IRecoService {\n"
                 "    RecoMapper recoMapper;\n"
                 "    public void query(BasePageQueryParams params) {\n"
                 "        PageHelper.startPage(1, 20, params.getOrderBy());\n"
@@ -156,7 +156,19 @@ class QueryContractTests(unittest.TestCase):
     def test_dynamic_gap(self):
         xml = ('<mapper namespace="x"><select id="query">SELECT state, '
                '<if test="x">amount,</if> id FROM reco</select></mapper>')
-        self.assertIn("DYNAMIC_SQL", selects(xml, "m.xml")[("x", "query")]["gaps"])
+        self.assertIn(
+            "DYNAMIC_SELECT_PROJECTION",
+            selects(xml, "m.xml")[("x", "query")]["gaps"])
+
+    def test_dynamic_where_does_not_hide_static_projection(self):
+        xml = (
+            '<mapper namespace="x"><select id="query">'
+            'SELECT state, id FROM reco '
+            '<where><if test="state != null">AND state = #{state}</if></where>'
+            '</select></mapper>')
+        found = selects(xml, "m.xml")[("x", "query")]
+        self.assertEqual(found["columns"], ["id", "state"])
+        self.assertEqual(found["gaps"], [])
 
 
 if __name__ == "__main__":
