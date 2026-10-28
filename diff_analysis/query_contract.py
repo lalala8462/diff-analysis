@@ -612,10 +612,20 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
         project = ledger['project']
         old = snapshots.get((project, 'base'), {})
         new = snapshots.get((project, 'head'), {})
-        for path in sorted(set(old) & set(new)):
-            if not path.endswith('.xml'):
-                continue
-            before, after = selects(old[path], path), selects(new[path], path)
+        xml_pairs = []
+        for file_info in ledger.get('final_files', []):
+            new_path = file_info.get('path')
+            old_path = file_info.get('old_path') or new_path
+            if (new_path and old_path and new_path.endswith('.xml')
+                    and old_path in old and new_path in new):
+                xml_pairs.append((old_path, new_path))
+        if not xml_pairs:
+            xml_pairs = [(path, path) for path in sorted(set(old) & set(new))
+                         if path.endswith('.xml')]
+
+        for old_path, path in sorted(set(xml_pairs)):
+            before = selects(old[old_path], old_path)
+            after = selects(new[path], path)
             for key in sorted(set(before) & set(after)):
                 previous, current = before[key], after[key]
                 if previous['gaps'] or current['gaps']:
