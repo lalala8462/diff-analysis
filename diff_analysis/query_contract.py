@@ -42,6 +42,15 @@ GET_ORDER = re.compile(r'\b([A-Za-z_]\w*)\.getOrderBy\s*\(')
 PAGEHELPER_DYNAMIC = re.compile(
     r'\b(?:PageHelper\s*\.\s*)?(?:startPage|orderBy)\s*\([^;\n]*getOrderBy\s*\(',
     re.I)
+HTTP_MAPPING = re.compile(
+    r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)'
+    r'\s*(?:\(\s*(?:(?:value|path)\s*=\s*)?["\x27]([^"\x27]*)["\x27][^)]*\))?',
+    re.I)
+CLASS_REQUEST_MAPPING = re.compile(
+    r'@RequestMapping\s*\(\s*(?:(?:value|path)\s*=\s*)?'
+    r'["\x27]([^"\x27]*)["\x27][^)]*\)\s*'
+    r'(?:public\s+)?(?:abstract\s+)?(?:class|interface)\s+[A-Za-z_]\w*',
+    re.I | re.S)
 
 
 def projection(sql):
