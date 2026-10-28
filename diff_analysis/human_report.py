@@ -501,11 +501,6 @@ def write_html(root, release, specs, reviews, manifest=None):
                 out.append('<p>%s:%s　%s%s　<code>%s</code></p>' %
                            (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(suffix),
                             esc(ref['evidence'])))
-        if candidate.get('parameter_sort_sources'):
-            out.append('<p><b>排序参数类型中的字段来源：</b></p>')
-            for ref in candidate['parameter_sort_sources']:
-                out.append('<p>%s:%s　%s　<code>%s</code></p>' %
-                           (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(ref['evidence'])))
         if candidate.get('controller_endpoints'):
             out.append('<p><b>Controller / HTTP 锚点：</b></p>')
             for ref in candidate['controller_endpoints']:
@@ -536,8 +531,9 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
                    len(query_contract['omissions']))
     for candidate in external_candidates:
-        out.append('<article class="card alert"><b>外部影响面 [HIGH]：%s / %s</b>' %
-                   (esc(candidate.get('project')), esc(candidate.get('change_id'))))
+        out.append('<article class="card alert"><b>外部影响面 [%s]：%s / %s</b>' %
+                   (esc(candidate.get('priority', 'UNKNOWN')),
+                    esc(candidate.get('project')), esc(candidate.get('change_id'))))
         out.append('<p>该最终差异直接落在可被外部触发的入口方法/服务面上，不要求先还原完整调用链。</p>')
         for surface in candidate.get('surfaces', []):
             out.append('<p><b>%s</b>　%s　%s:%s　%s　<code>%s</code></p>' %
