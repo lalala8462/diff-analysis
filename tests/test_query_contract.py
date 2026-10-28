@@ -1,8 +1,8 @@
 """Static query contract regression tests."""
 import unittest
 from diff_analysis.query_contract import (
-    caller_sort_evidence, mapper_callers, mapper_declaration, projection,
-    scan_references, selects)
+    caller_sort_evidence, controller_endpoints, endpoint_frontend_references,
+    mapper_callers, mapper_declaration, projection, scan_references, selects)
 
 
 class QueryContractTests(unittest.TestCase):
@@ -89,6 +89,60 @@ class QueryContractTests(unittest.TestCase):
         self.assertTrue(any(
             item["kind"] == "PAGEHELPER_DYNAMIC_SORT"
             for item in dynamic))
+
+    def test_controller_http_and_frontend_binding(self):
+        files = {
+            "src/x/RecoMapper.java": (
+                "package x;\n"
+                "public interface RecoMapper {\n"
+                "    java.util.List queryRecoRecords(BasePageQueryParams params);\n"
+                "}\n"),
+            "src/x/RecoService.java": (
+                "package x;\n"
+                "class RecoService implements IRecoService {\n"
+                "    RecoMapper recoMapper;\n"
+                "    public void query(BasePageQueryParams params) {\n"
+                "        PageHelper.startPage(1, 20, params.getOrderBy());\n"
+                "        recoMapper.queryRecoRecords(params);\n"
+                "    }\n"
+                "}\n"),
+            "src/x/RecoController.java": (
+                "package x;\n"
+                "@RequestMapping(\"/reco\")\n"
+                "@RestController\n"
+                "class RecoController {\n"
+                "    IRecoService recoService;\n"
+                "    @PostMapping(\"/query\")\n"
+                "    public void list(BasePageQueryParams params) {\n"
+                "        recoService.query(params);\n"
+                "    }\n"
+                "}\n"),
+        }
+        declaration = mapper_declaration(
+            files, "x.RecoMapper", "queryRecoRecords")
+        callers = mapper_callers(files, declaration)
+        endpoints = controller_endpoints(files, callers)
+        self.assertEqual(len(endpoints), 1)
+        self.assertEqual(endpoints[0]["http_method"], "POST")
+        self.assertEqual(endpoints[0]["url"], "/reco/query")
+
+        snapshots = {
+            ("backend", "head"): files,
+            ("front", "head"): {
+                "src/api/reco.js": (
+                    'const url = "/reco/query";\n'
+                    'const query = { sortName: "state" };\n')
+            },
+        }
+        entries = {
+            "backend": {"head": "a" * 40},
+            "front": {"head": "b" * 40},
+        }
+        refs = endpoint_frontend_references(
+            snapshots, entries, endpoints, "state")
+        self.assertEqual(len(refs), 1)
+        self.assertEqual(refs[0]["project"], "front")
+        self.assertEqual(refs[0]["binding"], "HTTP_PATH_AND_SORT_FIELD_SAME_FILE")
 
     def test_mapper_namespace_must_match_java_type(self):
         files = {
