@@ -13,7 +13,7 @@ from .gitops import git
 from .source_index import source_snapshot_index
 
 
-VERSION = "query-contract-v2"
+VERSION = "query-contract-v3"
 EXTS = {".xml", ".java", ".vue", ".js", ".jsx", ".ts", ".tsx"}
 MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
@@ -712,6 +712,12 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         'reason': 'MAPPER_METHOD_NOT_BOUND', 'namespace': key[0]})
 
                 for column in sorted(set(previous['columns']) - set(current['columns'])):
+                    old_item = next(
+                        item for item in previous.get('projection_items', [])
+                        if item.get('output') == column)
+                    change_kind, replacement_column, sql_sort_assessment = (
+                        _column_change_assessment(
+                            old_item, current.get('projection_items', [])))
                     bound_direct, bound_dynamic = [], []
                     parameter_sources = []
                     for caller in callers:
@@ -784,6 +790,10 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         'select_id': key[1],
                         'path': path,
                         'deleted_column': column,
+                        'column_change_kind': change_kind,
+                        'replacement_column': replacement_column,
+                        'deleted_projection': old_item,
+                        'sql_sort_assessment': sql_sort_assessment,
                         'change_ids': _change_ids(
                             ledger, path, previous, current),
                         'old': previous,
