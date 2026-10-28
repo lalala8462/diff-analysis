@@ -10,6 +10,7 @@ from .architecture_sources import default_projects, isolate_specs, source_name
 from .sdk_contracts import analyze_contract_uses
 from .database_inventory import analyze_table_impacts
 from .shared_resources import analyze_shared_resources
+from .instance_identity import attach_instance_evidence
 
 
 def _text(node, name):
@@ -268,6 +269,9 @@ def analyze(specs, ledgers, manifest=None):
     shared = analyze_shared_resources(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'shared_resources')
+    instance_scope = attach_instance_evidence(
+        entries, database, shared,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'instance_indexes')
     contract = analyze_contract_uses(
         sdks, entries, snapshots, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'sdk_contract_source')
@@ -277,6 +281,7 @@ def analyze(specs, ledgers, manifest=None):
             'contract_changes': contract['changes'],
             'contract_impacts': contract['impacts'],
             'database': database, 'shared_resources': shared,
+            'instance_scope': instance_scope,
             'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
                           'branch': i.get('branch')} for p, i in entries.items()]}

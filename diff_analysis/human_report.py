@@ -392,7 +392,13 @@ def write_html(root, release, specs, reviews, manifest=None):
                 'evolution': _file_evolution(repos.get(project), ledger, path, changes),
                 'change_ids': [c['id'] for c in changes],
                 'attribution': ['%s：%s（%s）' % (c['id'], '、'.join(attribution(c)[0]) or '未归属', attribution(c)[1]) for c in changes]})
-    sdk['human_priority_count'] = len(alerts) + len(contract_impacts) + len(table_impacts) + len(shared_impacts)
+    resource_groups = defaultdict(list)
+    for candidate in unified_resources['candidates']:
+        key = (candidate['producer_project'], candidate['consumer_project'])
+        resource_groups[key].append(candidate)
+    sdk['human_priority_count'] = len(alerts) + len(resource_groups)
+    sdk['resource_group_count'] = len(resource_groups)
+    sdk['resource_candidate_count'] = len(unified_resources['candidates'])
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
     out.append('<section><h2>比较范围与覆盖</h2>')
     versions = {item['project']: item for item in release.get('comparisons', [])}
@@ -501,85 +507,48 @@ def write_html(root, release, specs, reviews, manifest=None):
         if ids:
             out.append('<p>SDK 和代码变化证据：' + '　'.join(_evidence_link(i) for i in s.get('changes', []) + a.get('change_ids', [])) + '</p>')
         out.append('</article>')
-    for finding in contract_impacts:
-        s = finding['sdk']
-        out.append('<article class="card alert"><b>SDK 契约与消费者项目：%s</b>'
-                   '<p>SDK %s / %s · %s:%s</p>'
-                   '<p>生产方 %s → %s；消费方固定版本 %s；声明依赖版本 %s</p>'
-                   '<p class="gap">静态类型作用域内的成员使用候选，不证明实际类型绑定、契约不兼容或生产部署。</p>' %
-                   (esc(finding['consumer']), esc(s['project']), esc(s['module']),
-                    esc(s['group']), esc(s['artifact']),
-                    esc((s.get('base_sha') or '')[:12]), esc((s.get('head_sha') or '')[:12]),
-                    esc((finding.get('consumer_head_sha') or '')[:12]),
-                    esc(str(finding.get('dependency_version') or '未知'))))
-        by_change = {}
-        for use in finding['uses']:
-            c = use['contract']
-            key = (c['path'], c['identity'], c['status'])
-            by_change.setdefault(key, []).append(use)
-        for (path, member, status), uses in sorted(by_change.items()):
-            c = uses[0]['contract']
-            out.append('<details><summary>%s · %s · %s（%d 处用法）</summary>' %
-                       (esc(path), esc(member), esc(status), len(uses)))
-            out.append('<p>原契约：%s；新契约：%s</p><p>生产方差异：%s</p>' %
-                       (esc(str((c['old'] or {}).get('signature') or '不存在')),
-                        esc(str((c['new'] or {}).get('signature') or '不存在')),
-                        ' '.join(_evidence_link(i) for i in c['change_ids'])))
-            for use in uses:
-                out.append('<p>%s:%d（%s） <code>%s</code></p>' %
-                           (esc(use['consumer_path']), use['line'],
-                            esc(use['binding_status']), esc(use['excerpt'])))
-            out.append('</details>')
-        out.append('<p>待确认：实际类型绑定、API 兼容性和是否需要调整消费者。</p></article>')
-    for item in table_impacts:
-        out.append('<article class="card alert"><b>跨项目数据库表：%s</b>'
-                   '<p>变化项目：%s（%s → %s） · 消费项目：%s（%s）</p>'
-                   '<p>匹配等级：%s；未核实数据库实例、Schema、环境及部署版本。</p>' %
-                   (esc(item['table']), esc(item['producer_project']),
-                    esc(item['producer_base_sha'][:12]),
-                    esc(item['producer_head_sha'][:12]),
-                    esc(item['consumer_project']), esc(item['consumer_sha'][:12]),
-                    esc(item['status'])))
-        out.append('<p>变化差异证据：%s</p>' %
-                   ' '.join(_evidence_link(change_id) for change_id in item['change_ids']))
-        out.append('<details><summary>变化方表访问（%d 处）</summary>' %
-                   len(item['producer_uses']))
-        for use in item['producer_uses']:
-            out.append('<p>%s · %s · %s:%d–%d · %s · 数据源线索：%s</p>' %
-                       (esc(use['side']), esc(use['role']), esc(use['path']),
-                        use['start'], use['end'], esc(use['table']),
-                        esc(use.get('datasource_hint') or '未知')))
-        out.append('</details><details><summary>其他项目的表使用位置（%d 处）</summary>' %
-                   len(item['consumer_uses']))
-        for use in item['consumer_uses']:
-            out.append('<p>%s · %s:%d–%d · %s · 数据源线索：%s</p>' %
-                       (esc(use['role']), esc(use['path']), use['start'], use['end'],
-                        esc(use['table']), esc(use.get('datasource_hint') or '未知')))
-        out.append('</details><p>待确认：是否为同一数据库/实例/环境、真实读写路径及表结构兼容性。同名表不是确定依赖。</p></article>')
-    for item in shared_impacts:
-        out.append('<article class="card alert"><b>%s：%s · 消费项目 %s</b>'
-                   '<p>变更项目：%s (%s → %s)；消费者固定 SHA %s</p>'
-                   '<p>状态：%s。源码名称或前缀候选，不证明 Redis 实例 / Spring Bean / 反射绑定。</p>' %
-                   (esc(item['kind']), esc(item['resource']), esc(item['consumer_project']),
-                    esc(item['producer_project']), esc(item['base_sha'][:12]),
-                    esc(item['head_sha'][:12]), esc(item['consumer_sha'][:12]),
-                    esc(item['status'])))
-        out.append('<p>关联 D-*：%s</p>' %
-                   ' '.join(_evidence_link(cid) for cid in item['change_ids']))
-        out.append('<details><summary>变更来源（%d 处）</summary>' % len(item['source_uses']))
-        for use in item['source_uses']:
-            out.append('<p>%s · %s · %s:%d · %s · 实例线索 %s</p>' %
-                       (esc(use['side']), esc(use['role']), esc(use['path']),
-                        use['start'], esc(use.get('expression') or use['method']),
-                        esc(use.get('datasource_hint') or '未知')))
-        out.append('</details><details><summary>消费者用法（%d 处）</summary>' % len(item['consumer_uses']))
-        for use in item['consumer_uses']:
-            out.append('<p>%s · %s:%d · %s · 实例线索 %s</p>' %
-                       (esc(use['role']), esc(use['path']), use['start'],
-                        esc(use.get('expression') or use['method']),
-                        esc(use.get('datasource_hint') or '未知')))
-        out.append('</details><p>待确认：键空间或实例、部署配置、消费者契约及动态目标。</p></article>')
-    if not alerts and not contract_impacts and not table_impacts and not shared_impacts:
+    # Each producer/consumer pair appears once in the priority section.
+    # Different resource evidence is preserved in nested details.
+    for (producer, consumer), resources in sorted(resource_groups.items()):
+        out.append('<article class="card alert"><b>跨项目资源影响：%s → %s（%d 项资源）</b>' %
+                   (esc(producer), esc(consumer), len(resources)))
+        out.append('<p>以下为固定 SHA 的静态候选。配置端点相同不代表已部署到同一实例。</p>')
+        for candidate in resources:
+            kind = candidate['kind']
+            if kind == 'DATABASE_TABLE':
+                heading = '跨项目数据库表：' + str(candidate['resource'])
+            elif kind == 'SDK_CONTRACT':
+                heading = 'SDK 契约与消费者项目：' + str(consumer) + ' · ' + str(candidate['resource'])
+            else:
+                heading = str(kind) + '：' + str(candidate['resource'])
+            out.append('<details><summary>%s · %s</summary>' %
+                       (esc(heading), esc(candidate['status'])))
+            out.append('<p>生产方版本 %s → %s；消费者固定 SHA %s；资源候选 %s</p>' %
+                       (esc((candidate.get('producer_base_sha') or '')[:12]),
+                        esc((candidate.get('producer_head_sha') or '')[:12]),
+                        esc((candidate.get('consumer_sha') or '')[:12]),
+                        esc(candidate['id'])))
+            instance = candidate.get('instance_evidence', {})
+            if instance:
+                out.append('<p>实例配置证据：%s；%s</p>' %
+                           (esc(instance.get('status')), esc(instance.get('profile') or
+                                                              ','.join(instance.get('reasons', [])))))
+            out.append('<p>原始差异：%s</p>' %
+                       ' '.join(_evidence_link(i) for i in candidate['change_ids']))
+            for title, uses in (('变化方源码', candidate['source_uses']),
+                                ('消费者源码', candidate['consumer_uses'])):
+                out.append('<details><summary>%s（%d 处）</summary>' % (title, len(uses)))
+                for use in uses:
+                    out.append('<p>%s:%s · %s · %s · %s</p>' %
+                               (esc(use.get('path')), esc(use.get('start', use.get('line'))),
+                                esc(use.get('role', use.get('binding_status',
+                                                            use.get('status', '候选')))),
+                                esc(use.get('table', use.get('method', kind))),
+                                esc(use.get('datasource_hint', use.get('producer_side', '')))))
+                out.append('</details>')
+            out.append('<p>待核实：源码/调用绑定、生产部署与兼容性。</p></details>')
+        out.append('</article>')
+    if not alerts and not resource_groups:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
     out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
@@ -613,19 +582,10 @@ def write_html(root, release, specs, reviews, manifest=None):
     out.append('</section>')
     out.append('<section><h2>统一资源关联索引</h2><p>以资源类型、变化项目、资源名称及消费者项目分组，和上面的重点项共用固定 SHA 证据。'
                '下载完整结构化内容请查看 resource_impact_latest.json；人工拆组后的归属单独写入 resource_review_latest.json。</p>')
-    for candidate in unified_resources['candidates']:
-        out.append('<details><summary>%s · %s · %s → %s</summary>' %
-                   (esc(candidate['kind']), esc(candidate['resource']),
-                    esc(candidate['producer_project']),
-                    esc(candidate['consumer_project'])))
-        out.append('<p>固定版本：生产方 %s → %s；消费方 %s；状态 %s</p>' %
-                   (esc((candidate['producer_base_sha'] or '')[:12]),
-                    esc((candidate['producer_head_sha'] or '')[:12]),
-                    esc((candidate['consumer_sha'] or '')[:12]),
-                    esc(candidate['status'])))
-        out.append('<p>来源 D-*：%s；消费者证据 %d 处</p></details>' %
-                   (' '.join(_evidence_link(cid) for cid in candidate['change_ids']),
-                    len(candidate['consumer_uses'])))
+    out.append('<p>共 %d 项唯一资源候选，按 %d 组变化项目与消费者项目合并。'
+               '详情已在“优先确认”的组合卡片中展示，避免重复渲染。'
+               '完整 JSON 见 resource_impact_latest.json。</p>' %
+               (len(unified_resources['candidates']), len(resource_groups)))
     out.append('</section>')
     out.append('<p><a href="report.md">Markdown 证据入口</a> · <a href="ai_review.md">AI 输入材料</a> · <a href="analysis.json">结构化底账</a></p></main>')
     out.append('<aside id="evidence-panel" class="evidence-panel" aria-label="差异证据详情" hidden><div class="evidence-heading"><strong>差异证据详情</strong><button id="evidence-close" onclick="closeEvidence()" aria-label="关闭详情">关闭 ×</button></div><div id="evidence-body" class="evidence-body"></div></aside>')

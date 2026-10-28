@@ -63,6 +63,7 @@ def normalized_candidates(dependency_scope):
             "change_ids": row["change_ids"],
             "source_uses": row["producer_uses"],
             "consumer_uses": row["consumer_uses"],
+            "instance_evidence": row.get("instance_evidence"),
             "status": row["status"]})
     for row in dependency_scope.get("shared_resources", {}).get("impacts", []):
         result.append({
@@ -75,6 +76,7 @@ def normalized_candidates(dependency_scope):
             "change_ids": row["change_ids"],
             "source_uses": row["source_uses"],
             "consumer_uses": row["consumer_uses"],
+            "instance_evidence": row.get("instance_evidence"),
             "status": row["status"]})
     for item in result:
         item["id"] = "R-" + _hash([

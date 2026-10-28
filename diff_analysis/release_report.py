@@ -521,6 +521,9 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         dependency_scope = write_html(root, release, specs, reviews, project_registry)
         database = dependency_scope.get('database', {})
         shared = dependency_scope.get('shared_resources', {})
+        instances = dependency_scope.get('instance_scope', {})
+        (root / 'instance_scope_latest.json').write_text(
+            json.dumps(instances, ensure_ascii=False, indent=2), encoding='utf-8')
         (root / 'database_impact_latest.json').write_text(
             json.dumps(database, ensure_ascii=False, indent=2), encoding='utf-8')
         (root / 'shared_resource_latest.json').write_text(
@@ -549,6 +552,9 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                          'table_index_gaps': len(database.get('omissions', [])),
                          'shared_resource_candidates': len(shared.get('impacts', [])),
                          'shared_resource_gaps': len(shared.get('omissions', [])),
+                         'instance_scope_gaps': len(instances.get('omissions', [])),
+                         'resource_group_count': dependency_scope.get('resource_group_count', 0),
+                         'resource_candidate_count': dependency_scope.get('resource_candidate_count', 0),
                          'resource_review': resource_summary,
                          'human_priority_count': dependency_scope['human_priority_count']}
         (root / 'dependency_scope.json').write_text(
@@ -556,12 +562,12 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         if manifest is not None:
             stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json', 'database_impact_latest.json',
                                                             'shared_resource_latest.json', 'resource_impact_latest.json',
-                                                            'resource_review_latest.json'])
+                                                            'resource_review_latest.json', 'instance_scope_latest.json'])
             stage_manifest['dependency_scan'] = {
-                'status': 'PARTIAL' if scope_summary['gaps'] or scope_summary['table_index_gaps'] or scope_summary['shared_resource_gaps'] else 'COMPLETE',
+                'status': 'PARTIAL' if scope_summary['gaps'] or scope_summary['table_index_gaps'] or scope_summary['shared_resource_gaps'] or scope_summary['instance_scope_gaps'] else 'COMPLETE',
                 'output_ref': 'dependency_scope.json',
                 'gap_count': (len(scope_summary['gaps']) + scope_summary['table_index_gaps'] +
-                                            scope_summary['shared_resource_gaps'])}
+                                            scope_summary['shared_resource_gaps'] + scope_summary['instance_scope_gaps'])}
     except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
         failure = {"project": "(batch)", "stage": "HUMAN_HTML",
                    "error_type": type(exc).__name__, "reason": str(exc)[:500]}

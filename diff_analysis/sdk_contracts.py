@@ -11,7 +11,7 @@ from pathlib import Path
 from .gitops import git, safe_source_path
 from .source_index import source_snapshot_index
 
-RULES_VERSION = "sdk-contract-lexical-v3"
+RULES_VERSION = "sdk-contract-lexical-v4"
 MAX_BLOB = 600_000
 MAX_CONSUMER_BYTES = 12_000_000
 MAX_CONSUMER_FILES = 2500
@@ -259,6 +259,7 @@ def _consumer_uses(text, contract):
 
 def analyze_contract_uses(sdks, entries, snapshots, ledgers, cache_dir):
     """Version-scoped, direct-Maven consumer matches; includes unchanged files."""
+    from .sdk_ast_bindings import attributed_uses
     groups, all_changes, gaps = [], [], []
     for sdk in sdks:
         producer = sdk["project"]
@@ -286,7 +287,14 @@ def analyze_contract_uses(sdks, entries, snapshots, ledgers, cache_dir):
                              "detail": str(exc)[:100]})
                 continue
             gaps.extend({"project": consumer, **gap} for gap in index["omissions"])
+            ast_uses, ast_gaps = attributed_uses(
+                sdk, consumer, entries, snapshots, changes, Path(cache_dir) / "jdk8_bindings")
+            gaps.extend({"project": consumer, "sdk": sdk["project"], **gap}
+                        for gap in ast_gaps)
             uses, byte_budget = [], 0
+            ast_locations = {
+                (item["contract"]["identity"], item["consumer_path"], item["line"])
+                for item in ast_uses}
             for seen, file in enumerate(index["files"]):
                 if seen >= MAX_CONSUMER_FILES or byte_budget >= MAX_CONSUMER_BYTES:
                     gaps.append({"project": consumer, "reason": "SDK_CONSUMER_SCAN_BUDGET"})
@@ -298,6 +306,8 @@ def analyze_contract_uses(sdks, entries, snapshots, ledgers, cache_dir):
                 byte_budget += len(source.encode("utf-8"))
                 for change in changes:
                     for use in _consumer_uses(source, change):
+                        if (change["identity"], path, use["line"]) in ast_locations:
+                            continue
                         uses.append({"contract": change, "consumer_path": path,
                                      "consumer_sha": item["head"], **use})
                         if len(uses) >= MAX_HITS_PER_CONSUMER:
@@ -307,6 +317,9 @@ def analyze_contract_uses(sdks, entries, snapshots, ledgers, cache_dir):
                         break
                 if len(uses) >= MAX_HITS_PER_CONSUMER:
                     break
+            # Attributed evidence takes precedence over lexical candidates;
+            # unresolved uses remain explicitly marked lexical.
+            uses = (ast_uses + uses)[:MAX_HITS_PER_CONSUMER]
             if uses:
                 groups.append({
                     "sdk": sdk, "consumer": consumer,
@@ -314,5 +327,7 @@ def analyze_contract_uses(sdks, entries, snapshots, ledgers, cache_dir):
                     "dependency_version": dependency.get("version"),
                     "dependency_path": dependency.get("path"), "uses": uses,
                     "status": "REVIEW_REQUIRED",
-                    "limitation": "Type-scoped lexical candidates, not compiled bindings or proven incompatibility"})
+                    "limitation": "JDK8 attributed SDK source symbols when available; "
+                                  "lexical fallback remains unverified. "
+                                  "Neither proves the deployed binary or compatibility."})
     return {"changes": all_changes, "impacts": groups, "gaps": gaps}

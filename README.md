@@ -206,6 +206,18 @@ ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和�
 
 这些修复不提升静态规则到运行时精确绑定。真实项目测试、完整 unittest/JDK 8 CI 仍未成功验证，不能声称四阶段已经通过全面验收。
 
+## 新增：SDK JDK 8 AST 归属、实例配置证据与首页去重（2026-10-28）
+
+本轮把 SDK 使用侧从**仅词法候选**升级为**优先 javac 元素归属**。新增 `diff_analysis/java/SdkBindingScanner.java` 和 `diff_analysis/sdk_ast_bindings.py`：使用完整 JDK 8 的 Java Compiler API，在隔离临时目录中读取 SDK 的固定 BASE/HEAD SHA 与消费者 HEAD SHA 的 Java 源码，执行 `parse/analyze`，禁用注解处理器且不执行 `generate()`、不调用业务构建脚本。对消费侧调用，只有当 Java 符号的 owner、成员类型、名称、参数签名与同一次 javac 分析中 SDK 声明符号相同，并且 SDK 声明落在该变化契约的源码位置时，标注 `JAVAC_ATTRIBUTED_SDK_SOURCE`。无法归属则继续展示原有 `TYPE_SCOPED_LEXICAL_CANDIDATE`，并通过 SDK AST gaps 记录缺失依赖、诊断、预算或工具不可用。SDK 合同变动的来源成员提取目前仍有词法覆盖限制，不支持所有复杂重载与生成源码。
+
+**注意：JDK 8 AST 证明的是“使用点归属到本次选定的 SDK 源码符号”，不是 Maven 实际选中的已编译 JAR，不代表生产发布版本或升级兼容性。** 多模块源码、外部依赖、继承/泛型边界、注解生成代码可能导致扫描无法完成。消费者源文件与 SDK 源文件会依据 Git blob 物化到临时目录，原工作区不修改；超过扫描预算会记录缺口。
+
+新增 `diff_analysis/instance_identity.py`：只读取各项目 **HEAD 固定 SHA** 的 `application.properties` / `application.yml` / `application.yaml` 及命名 profile 变体。解析明确可用的 JDBC URL（MySQL、MariaDB、PostgreSQL、部分 Oracle）、Redis 主机/端口/逻辑 DB，以及 Redis Sentinel master/节点/逻辑 DB，生成**不包含明文密码和端点地址的摘要**。项目间同类型资源在唯一相同 profile 的端点摘要相同，仅报告 `CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF`；不同则 `CONFIG_ENDPOINT_MISMATCH_UNCONFIRMED`；环境/profile/路由未知则 `CONFIG_IDENTITY_UNKNOWN` 等状态。详情写入 `instance_scope_latest.json` 并附于表与 Redis 候选。**静态配置相同不是实际部署到同一实例；配置不同也不证明真实业务环境完全隔离。** 动态配置、配置中心、环境变量、动态数据源路由、Redis Cluster 和生产态连接尚不具备精确验证能力；不会连接数据库、Redis 或读取明文凭据。
+
+HTML 首页对 SDK 契约、数据库表、Redis 和反射等资源候选，改为以**（变化项目，消费者项目）**为单位生成一张重点卡片，并在卡片内按唯一 `R-*` 资源展开明细、`D-*` 证据、双方源码位置和配置身份线索。原有 SDK 版本风险、多工单风险保持独立类别，不误并入资源卡片。统一资源索引保留结构化输出但不再重复绘制整套卡片；`human_priority_count` 以卡片数量计，`resource_candidate_count` 另记候选数量。报告新增实例配置缺口统计。
+
+本轮添加的测试：`tests/test_sdk_ast_bindings.py`、`tests/test_instance_identity.py` 和 `tests/test_html_dedup.py`。**尚未在当前环境执行完整仓库测试或真实业务仓库端到端验收**；CI 因账户额度问题不在本轮修改范围，使用者可在本地 JDK 8 环境执行现有 unittest。
+
 ## 验证与限制
 
 - 当前支持 JDK 8 的静态分析；反射、动态代理、外部父 POM、真实数据源/缓存实例和跨服务部署关系仍可能无法解析。报告和索引均须披露未分析范围。
