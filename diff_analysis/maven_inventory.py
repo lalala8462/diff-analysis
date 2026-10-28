@@ -9,6 +9,7 @@ from .gitops import git, check_sha
 from .architecture_sources import default_projects, isolate_specs, source_name
 from .sdk_contracts import analyze_contract_uses
 from .database_inventory import analyze_table_impacts
+from .query_contract import analyze_query_contracts
 from .shared_resources import analyze_shared_resources
 from .instance_identity import attach_instance_evidence
 
@@ -266,6 +267,9 @@ def analyze(specs, ledgers, manifest=None):
     database = analyze_table_impacts(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'table_snapshots')
+    query_contract = analyze_query_contracts(
+        entries, ledgers,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'query_contract')
     shared = analyze_shared_resources(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'shared_resources')
@@ -280,7 +284,7 @@ def analyze(specs, ledgers, manifest=None):
     return {'sdks': sdks, 'alerts': alerts,
             'contract_changes': contract['changes'],
             'contract_impacts': contract['impacts'],
-            'database': database, 'shared_resources': shared,
+            'database': database, 'query_contract': query_contract, 'shared_resources': shared,
             'instance_scope': instance_scope,
             'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
