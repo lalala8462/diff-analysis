@@ -78,7 +78,29 @@ def normalized_candidates(dependency_scope):
             "consumer_uses": row["consumer_uses"],
             "instance_evidence": row.get("instance_evidence"),
             "status": row["status"]})
+    external_by_change = defaultdict(list)
+    for row in dependency_scope.get("external_influence", {}).get("candidates", []):
+        for surface in row.get("surfaces", []):
+            external_by_change[row["change_id"]].append({
+                "external_kind": surface.get("external_kind"),
+                "priority": surface.get("priority"),
+                "side": surface.get("side"),
+                "path": surface.get("path"),
+                "line": surface.get("line"),
+                "method": surface.get("method"),
+                "reason": surface.get("reason"),
+                "evidence": surface.get("evidence")})
     for item in result:
+        external = []
+        seen = set()
+        for change_id in item.get("change_ids", []):
+            for surface in external_by_change.get(change_id, []):
+                signature = _hash(surface)
+                if signature not in seen:
+                    external.append(surface)
+                    seen.add(signature)
+        item["external_influence"] = external
+        item["externally_influenced"] = bool(external)
         item["id"] = "R-" + _hash([
             item["kind"], item["producer_project"], item["consumer_project"],
             item["resource"], item["producer_base_sha"],
@@ -107,7 +129,10 @@ def normalized_candidates(dependency_scope):
             "candidates": sorted(merged.values(), key=lambda x: x["id"]),
             "coverage_gaps": (dependency_scope.get("database", {}).get("omissions", []) +
                               dependency_scope.get("shared_resources", {}).get("omissions", [])),
-            "limitation": "Static project/resource/name candidates, never verified runtime bindings"}
+            "limitation": (
+                "Static project/resource/name candidates. External influence is a "
+                "direct inbound-surface signal, not whole-program reachability or "
+                "verified runtime binding.")}
 
 
 def _intersect(a, b):
