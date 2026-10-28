@@ -14,7 +14,7 @@ from .query_contract import (
     _declared_callable_types, _line)
 
 
-VERSION = "external-influence-v1"
+VERSION = "external-influence-v2"
 MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
 
