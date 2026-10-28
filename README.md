@@ -90,7 +90,7 @@ HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针�
 
 ## 查询字段与排序参数契约检查（首期静态候选）
 
-`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，对删除字段建立 `namespace + select id → Java Mapper 方法 → Mapper 调用方方法 → PageHelper/getOrderBy → 一次显式 Service 调用 → Spring Controller/HTTP 路径` 证据链；同时解析排序参数类型中的固定字段来源，并收集 Vue/JS/TS 排序字段。若前端固定 SHA 的同一文件同时出现已绑定 HTTP 路径和被删除排序字段，会记录更强的端到端静态证据。输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示，保留最终差异 D-*、双方 SHA、SQL 片段、Mapper/Service/Controller/前端位置和覆盖缺口。
+`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，对删除字段建立 `namespace + select id → Java Mapper 方法 → Mapper 调用方方法 → PageHelper/getOrderBy → 一次显式 Service 调用 → Spring Controller/HTTP 路径` 证据链；同时保留原始 SELECT 表达式，区分普通底层列删除、表达式/聚合别名删除以及同一表达式的别名改名，并分别提示 SQL `ORDER BY` 风险。还会解析排序参数类型中的固定字段来源并收集 Vue/JS/TS 排序字段。若前端固定 SHA 的同一文件同时出现已绑定 HTTP 路径和被删除排序字段，会记录更强的端到端静态证据。输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示，保留最终差异 D-*、双方 SHA、SQL 片段、Mapper/Service/Controller/前端位置和覆盖缺口。
 
 **证据等级：** `HIGH` 表示已绑定 Mapper 调用方法，并存在固定排序或可解析的动态排序参数来源；`MEDIUM` 表示已绑定 Mapper/调用方但动态参数来源仍不完整，或已形成 Mapper→Service→Controller/HTTP→前端同文件排序字段证据但尚未证明完整前端数据流；`LOW` 仅为同项目词法线索。等级只表示静态证据强弱，不代表已确认缺陷。
 
