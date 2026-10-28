@@ -263,7 +263,7 @@ def analyze_external_influence(entries, ledgers, cache_dir):
         try:
             base, gaps = _snapshot(
                 entry, project, "base", changed_paths, cache_dir,
-                include_all_java=True)
+                include_all_java=False)
             omissions.extend(gaps)
             head, gaps = _snapshot(
                 entry, project, "head", changed_paths, cache_dir,
