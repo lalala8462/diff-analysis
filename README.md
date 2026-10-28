@@ -62,6 +62,7 @@ EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次�
 | SDK 自身版本 | 识别为 API/SDK 模块的源码或 POM 变化，且两侧模块版本未变化或无法解析时，提示核对版本。模块命名与静态识别存在覆盖限制。 |
 | SDK 消费者版本 | 本次比较项目产出的 SDK 版本发生变化，消费者声明仍为旧版、与新版不一致或无法判断时，提示确认是否配套升级。只提供单一固定版本时无法判断升级过程。 |
 | SDK 契约使用候选 | 比较直接 Maven SDK 的 Java 字段、简单方法和枚举声明，查找消费者固定版本中有类型作用域线索的实际成员表达式；按消费者项目归组。仅 import 不触发重点，静态候选不证明不兼容。 |
+| 查询结果列与排序参数契约 | 对比 MyBatis `<select>` 旧新输出字段；删除/改名字段仍被 Java/PageHelper、Vue/JS/TS 排序参数引用时，生成固定 SHA 静态候选。输出缺列不等于 `ORDER BY` 必然报错；动态 SQL 和跨层绑定保留缺口。 |
 | 跨项目数据库表候选 | 本次变化 SQL/DDL/显式表映射关联其他固定 SHA 的表访问位置；同名不等于同实例，实际部署须人工确认。 |
 | Redis、缓存 DTO 与反射候选 | 固定 SHA 下通过 Key/前缀、值类型线索及 Bean/反射名称关联消费者，均需人工核实绑定。 |
 | 统一资源候选及修订 | 为资源关联建立独立 R-* 编号并挂接 ReviewUnit，拆组仅重算归属和问题指纹，原始事实保留。 |
@@ -86,6 +87,12 @@ EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次�
 HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针对 CHANGE 项目固定 BASE/HEAD 的最终净差异，提取 MyBatis XML（select/insert/update/delete）、SQL 脚本 DDL/读写语句、Java 字面量 SQL 及显式 `@TableName` / `@Table(name=...)` 映射。只从**实际重叠本次变化行的表访问**出发，反向查找其他已登记或已输入项目在固定 SHA 的访问位置（即使消费者没有改动）。结果按变化项目、表名和消费者项目合并，保留双方 SHA、表读写角色、行号、D-* 差异 ID、数据源名称线索和缺口。
 
 分析使用源 Git blob，不检出、不连接数据库，不执行被分析项目代码。按项目 SHA、表解析规则和预算缓存扫描结果；源文件超限、动态 SQL、文件解析失败等写入 omissions。**同名表仅表示 SOURCE_TABLE_TOKEN_ONLY 候选，绝不代表已经确认相同实例、Schema、路由或业务影响。** 同名异数据源 / 异 Schema 需人工确认。暂不支持字段血缘、运行态连接、多层 Java 字符串拼接和完整动态 SQL，真实 ADPTS/WebAPI 案例仍待验收。
+
+## 查询字段与排序参数契约检查（首期静态候选）
+
+`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，检测删去的字段名是否仍出现在固定 HEAD Java、Vue、JS、TS 排序引用中，输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示。保留 Mapper namespace、select id、SQL 片段、双方 SHA、消费方文件和行号。
+
+**边界：** 当前采用词法候选，不是精确 Mapper→Service→HTTP→前端绑定；字段同名可能误匹配，暂不支持完整动态 SQL、表达式、通配符与前端配置传递。无法解析时保留 omissions，不直接报缺陷。SQL SELECT 未输出字段也不必然代表该字段无法用于 ORDER BY。后续需增强 Mapper 精确绑定、查询/响应 DTO、接口端点及前端请求追踪。
 
 ## 阶段 3：Redis / 反射 / Spring Bean（首期实现）
 
