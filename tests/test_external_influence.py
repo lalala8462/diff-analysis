@@ -1,7 +1,9 @@
 """Regression tests for direct external influence surfaces."""
 import unittest
 
-from diff_analysis.external_influence import (\n    classify_method, mybatis_external_surfaces, mybatis_statements,\n    one_hop_external_surfaces)
+from diff_analysis.external_influence import (
+    classify_method, mybatis_external_surfaces, mybatis_statements,
+    one_hop_external_surfaces)
 from diff_analysis.query_contract import java_method_spans
 
 
