@@ -92,7 +92,7 @@ HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针�
 
 `query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，对删除字段建立 `namespace + select id → Java Mapper 方法 → Mapper 调用方方法 → PageHelper/getOrderBy → 一次显式 Service 调用 → Spring Controller/HTTP 路径` 证据链；同时解析排序参数类型中的固定字段来源，并收集 Vue/JS/TS 排序字段。若前端固定 SHA 的同一文件同时出现已绑定 HTTP 路径和被删除排序字段，会记录更强的端到端静态证据。输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示，保留最终差异 D-*、双方 SHA、SQL 片段、Mapper/Service/Controller/前端位置和覆盖缺口。
 
-**证据等级：** `HIGH` 表示已绑定 Mapper 调用方法，并存在固定排序、可解析的动态排序参数来源，或已形成 Mapper→Service→Controller/HTTP→前端同文件排序字段证据；`MEDIUM` 表示已绑定 Mapper/调用方但动态参数来源或接口传播仍不完整；`LOW` 仅为同项目词法线索。等级只表示静态证据强弱，不代表已确认缺陷。
+**证据等级：** `HIGH` 表示已绑定 Mapper 调用方法，并存在固定排序或可解析的动态排序参数来源；`MEDIUM` 表示已绑定 Mapper/调用方但动态参数来源仍不完整，或已形成 Mapper→Service→Controller/HTTP→前端同文件排序字段证据但尚未证明完整前端数据流；`LOW` 仅为同项目词法线索。等级只表示静态证据强弱，不代表已确认缺陷。
 
 **边界：** 当前支持一次显式类型调用向上追到 Spring Controller，并识别 `@RequestMapping`、`@GetMapping`、`@PostMapping`、`@PutMapping`、`@DeleteMapping`、`@PatchMapping` 的静态路径；前端只在“HTTP 路径与排序字段出现在同一文件”时形成更强关联。API 封装跨文件 import/调用、网关前缀、动态 URL、Feign/Dubbo 转发、多层 Service 链、完整请求 DTO 数据流仍未精确绑定。暂不支持完整动态 SQL、无法确定别名的复杂表达式和通配符。无法解析时保留 omissions，不直接报缺陷。SQL SELECT 未输出字段也不必然代表该字段无法用于 ORDER BY。
 
