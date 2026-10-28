@@ -212,7 +212,7 @@ ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和�
 
 **注意：JDK 8 AST 证明的是“使用点归属到本次选定的 SDK 源码符号”，不是 Maven 实际选中的已编译 JAR，不代表生产发布版本或升级兼容性。** 多模块源码、外部依赖、继承/泛型边界、注解生成代码可能导致扫描无法完成。消费者源文件与 SDK 源文件会依据 Git blob 物化到临时目录，原工作区不修改；超过扫描预算会记录缺口。
 
-新增 `diff_analysis/instance_identity.py`：只读取各项目 **HEAD 固定 SHA** 的 `application.properties` / `application.yml` / `application.yaml` 及命名 profile 变体。解析明确可用的 JDBC URL（MySQL、MariaDB、PostgreSQL、部分 Oracle）、Redis 主机/端口/逻辑 DB，以及 Redis Sentinel master/节点/逻辑 DB，生成**不包含明文密码和端点地址的摘要**。项目间同类型资源在唯一相同 profile 的端点摘要相同，仅报告 `CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF`；不同则 `CONFIG_ENDPOINT_MISMATCH_UNCONFIRMED`；环境/profile/路由未知则 `CONFIG_IDENTITY_UNKNOWN` 等状态。详情写入 `instance_scope_latest.json` 并附于表与 Redis 候选。**静态配置相同不是实际部署到同一实例；配置不同也不证明真实业务环境完全隔离。** 动态配置、配置中心、环境变量、动态数据源路由、Redis Cluster 和生产态连接尚不具备精确验证能力；不会连接数据库、Redis 或读取明文凭据。
+新增 `diff_analysis/instance_identity.py`：只读取各项目 **HEAD 固定 SHA** 的 `application.properties` / `application.yml` / `application.yaml` 及命名 profile 变体。解析明确可用的 JDBC URL（MySQL、MariaDB、PostgreSQL、部分 Oracle）、Redis 主机/端口/逻辑 DB，以及 Redis Sentinel master/节点/逻辑 DB，生成**不包含明文密码和端点地址的摘要**。项目间同类型资源在唯一相同 profile 的端点摘要相同，仅报告 `CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF`；不同则 `CONFIG_ENDPOINT_MISMATCH_UNCONFIRMED`；环境/profile/路由未知则 `CONFIG_IDENTITY_UNKNOWN` 等状态。配置来源文件、profile、拓扑和脱敏端点摘要写入 `instance_scope_latest.json`，表与 Redis 候选还包含两侧配置来源路径；不会导出凭据或完整连接 URL。**静态配置相同不是实际部署到同一实例；配置不同也不证明真实业务环境完全隔离。** 动态配置、配置中心、环境变量、动态数据源路由、Redis Cluster 和生产态连接尚不具备精确验证能力；不会连接数据库、Redis 或读取明文凭据。
 
 HTML 首页对 SDK 契约、数据库表、Redis 和反射等资源候选，改为以**（变化项目，消费者项目）**为单位生成一张重点卡片，并在卡片内按唯一 `R-*` 资源展开明细、`D-*` 证据、双方源码位置和配置身份线索。原有 SDK 版本风险、多工单风险保持独立类别，不误并入资源卡片。统一资源索引保留结构化输出但不再重复绘制整套卡片；`human_priority_count` 以卡片数量计，`resource_candidate_count` 另记候选数量。报告新增实例配置缺口统计。
 

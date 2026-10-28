@@ -91,6 +91,10 @@ class InstanceIdentityTests(unittest.TestCase):
                              db["impacts"][0]["instance_evidence"]["status"])
             self.assertEqual("CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF",
                              redis["impacts"][0]["instance_evidence"]["status"])
+            self.assertIn("src/main/resources/application.properties",
+                          db["impacts"][0]["instance_evidence"]["producer_source_paths"])
+            self.assertTrue(scope["configuration_evidence"]["a"])
+            self.assertNotIn("password", str(scope["configuration_evidence"]))
             c = commit(consumer, "src/main/resources/application.properties",
                        props.replace("jdbc:mysql://db:3306/pay",
                                      "jdbc:mysql://other:3306/pay")

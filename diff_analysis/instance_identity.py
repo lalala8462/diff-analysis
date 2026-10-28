@@ -180,7 +180,9 @@ def _single(source, kind, hint):
     profile, values = next(iter(grouped.items()))
     if len(values) != 1:
         return None, "AMBIGUOUS_ENDPOINTS"
-    return (profile, next(iter(values))), None
+    paths = sorted({x["source_path"] for x in options
+                    if x["profile"] == profile})
+    return (profile, next(iter(values)), paths), None
 
 
 def attach_instance_evidence(entries, database, shared, cache_dir):
@@ -221,14 +223,26 @@ def attach_instance_evidence(entries, database, shared, cache_dir):
             elif left[0] != right[0]:
                 row["instance_evidence"] = {"status": "PROFILE_MISMATCH_UNCONFIRMED",
                                             "producer_profile": left[0],
-                                            "consumer_profile": right[0]}
+                                            "consumer_profile": right[0],
+                                            "producer_source_paths": left[2],
+                                            "consumer_source_paths": right[2]}
             else:
                 row["instance_evidence"] = {
                     "status": ("CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF"
                                if left[1] == right[1] else
                                "CONFIG_ENDPOINT_MISMATCH_UNCONFIRMED"),
                     "profile": left[0], "producer_hash": left[1][:16],
-                    "consumer_hash": right[1][:16]}
+                    "consumer_hash": right[1][:16],
+                    "producer_source_paths": left[2],
+                    "consumer_source_paths": right[2]}
+    provenance = {
+        name: [{"kind": x["kind"], "profile": x["profile"],
+                "route": x["route"], "topology": x.get("topology", "DIRECT"),
+                "identity_hash_prefix": x["identity_hash"][:16],
+                "source_path": x["source_path"]}
+               for x in data.get("endpoints", [])]
+        for name, data in projects.items()}
     return {"schema_version": RULES_VERSION, "projects": len(projects),
+            "configuration_evidence": provenance,
             "omissions": gaps, "limitation": "Only explicit fixed-SHA config; "
             "no connection, environment, active profile, instance or routing attested"}
