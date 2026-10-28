@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .gitops import git
 from .source_index import source_snapshot_index
-from .query_contract import java_method_spans, _line
+from .query_contract import (\n    java_method_spans, mapper_callers, mapper_declaration, typed_method_callers,\n    _declared_callable_types, _line)
 
 
 VERSION = "external-influence-v1"
@@ -30,6 +30,11 @@ DUBBO_IMPORT = re.compile(
 DUBBO_ANNOTATION = re.compile(r'@(DubboService|Service)\b')
 SPRING_CONTROLLER = re.compile(r'@(RestController|Controller)\b')
 CLASS = re.compile(r'\b(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_]\w*)\b')
+MAPPER = re.compile(r'<mapper\b([^>]*)>', re.I)
+XML_ATTR = re.compile(r'\b(id|namespace)\s*=\s*["\x27]([^"\x27]+)', re.I)
+MYBATIS_STATEMENT = re.compile(
+    r'<(select|insert|update|delete)\b([^>]*)>(.*?)</\1\s*>',
+    re.I | re.S)
 
 def _overlap(change_range, start, end):
     begin = int((change_range or {}).get("start") or 0)
