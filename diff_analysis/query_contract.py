@@ -48,9 +48,7 @@ HTTP_MAPPING = re.compile(
     re.I)
 CLASS_REQUEST_MAPPING = re.compile(
     r'@RequestMapping\s*\(\s*(?:(?:value|path)\s*=\s*)?'
-    r'["\x27]([^"\x27]*)["\x27][^)]*\)\s*'
-    r'(?:public\s+)?(?:abstract\s+)?(?:class|interface)\s+[A-Za-z_]\w*',
-    re.I | re.S)
+    r'["\x27]([^"\x27]*)["\x27][^)]*\)', re.I)
 
 
 def projection(sql):
@@ -407,6 +405,16 @@ def _join_http_path(base, method):
     return '/' + value if value else '/'
 
 
+def _class_request_path(text):
+    type_match = re.search(r'\b(?:class|interface)\s+[A-Za-z_]\w*\b', _mask_java(text))
+    if not type_match:
+        return ''
+    mappings = [
+        match for match in CLASS_REQUEST_MAPPING.finditer(text)
+        if match.start() < type_match.start()]
+    return mappings[-1].group(1) if mappings else ''
+
+
 def _endpoint_for_caller(text, caller):
     if caller.get('caller_start') is None or caller.get('caller_end') is None:
         return None
@@ -416,8 +424,7 @@ def _endpoint_for_caller(text, caller):
     mapping = HTTP_MAPPING.search(header)
     if not mapping:
         return None
-    class_mapping = CLASS_REQUEST_MAPPING.search(text)
-    base = class_mapping.group(1) if class_mapping else ''
+    base = _class_request_path(text)
     annotation = mapping.group(1)
     path = mapping.group(2) or ''
     http_method = annotation[:-7].upper() if annotation.lower().endswith('mapping') else annotation.upper()
