@@ -371,7 +371,12 @@ def write_html(root, release, specs, reviews, manifest=None):
     table_result = sdk.get('database', {})
     table_impacts = table_result.get('impacts', [])
     query_contract = sdk.get('query_contract', {})
-    query_candidates = query_contract.get('candidates', [])
+    query_priority = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+    query_candidates = sorted(
+        query_contract.get('candidates', []),
+        key=lambda item: (query_priority.get(item.get('priority'), 9),
+                          item.get('project', ''), item.get('path', ''),
+                          item.get('select_id', ''), item.get('deleted_column', '')))
     _write_json(root / 'query_contract_latest.json', query_contract)
     shared_result = sdk.get('shared_resources', {})
     shared_impacts = shared_result.get('impacts', [])
@@ -425,6 +430,12 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('<p class="gap">数据库资源索引有 %d 处解析或扫描缺口；详情见 database_impact_latest.json。未发现同表关联不等于无依赖。</p>' % len(table_gaps))
         for gap in table_gaps[:15]:
             out.append('<p class="gap">表索引缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+
+    query_gaps = query_contract.get('omissions', [])
+    if query_gaps:
+        out.append('<p class="gap">查询结果列/排序契约扫描有 %d 处解析或绑定缺口；详情见 query_contract_latest.json。</p>' % len(query_gaps))
+        for gap in query_gaps[:12]:
+            out.append('<p class="gap">查询契约缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
 
     out.append('<p class="gap">仅检查本次输入及列出的取证项目；默认分支不代表实际部署。间接依赖、外部父 POM、反射和动态调用可能未覆盖。</p>')
     out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
