@@ -80,8 +80,7 @@ def _top_level_from_offset(sql):
     return None
 
 
-def projection(sql):
-    """Parse only a top-level SELECT list; uncertain expressions become gaps."""
+def _projection_parts(sql):
     sql = re.sub(r'/\*[\s\S]*?\*/|--[^\n]*', ' ', sql)
     start = re.search(r'\bselect\b', sql, re.I)
     if not start:
@@ -109,18 +108,85 @@ def projection(sql):
     chunks.append(raw[begin:].strip())
     if depth or quote:
         return [], ['UNBALANCED_EXPRESSION']
-    cols, gaps = [], []
-    for part in chunks:
-        alias = re.search(r'\bAS\s+([A-Za-z_]\w*)$', part, re.I)
-        simple = re.fullmatch(r'(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)', part)
-        implicit = re.fullmatch(
-            r'(?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*\s+([A-Za-z_]\w*)', part)
-        chosen = alias or simple or implicit
-        if chosen:
-            cols.append(chosen.group(1).lower())
-        else:
-            gaps.append('WILDCARD_OR_COMPLEX_EXPRESSION')
-    return sorted(set(cols)), sorted(set(gaps))
+    return chunks, []
+
+
+def _simple_column(expression):
+    match = re.fullmatch(
+        r'(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)', expression.strip())
+    return match.group(1).lower() if match else None
+
+
+def projection_details(sql):
+    """Return output names together with source expressions and alias kinds."""
+    parts, gaps = _projection_parts(sql)
+    if gaps:
+        return [], gaps
+    items = []
+    for index, raw_part in enumerate(parts):
+        part = raw_part.strip()
+        if index == 0:
+            part = re.sub(r'^DISTINCT\s+', '', part, flags=re.I).strip()
+        explicit = re.search(
+            r'\s+AS\s+([\x60"]?[A-Za-z_]\w*[\x60"]?)$', part, re.I)
+        if explicit:
+            output = explicit.group(1).strip(chr(96) + '"').lower()
+            expression = part[:explicit.start()].strip()
+            kind = ('COLUMN_ALIAS' if _simple_column(expression)
+                    else 'EXPRESSION_ALIAS')
+            items.append({'output': output, 'expression': expression,
+                          'kind': kind})
+            continue
+        simple = _simple_column(part)
+        if simple:
+            items.append({'output': simple, 'expression': part,
+                          'kind': 'SIMPLE_COLUMN'})
+            continue
+        implicit_column = re.fullmatch(
+            r'((?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*)\s+'
+            r'([A-Za-z_]\w*)', part)
+        if implicit_column:
+            items.append({'output': implicit_column.group(2).lower(),
+                          'expression': implicit_column.group(1),
+                          'kind': 'COLUMN_ALIAS'})
+            continue
+        implicit_expression = re.fullmatch(
+            r'(.+(?:\)|\bEND|[\x27"]|\d))\s+([A-Za-z_]\w*)',
+            part, re.I)
+        if implicit_expression:
+            items.append({'output': implicit_expression.group(2).lower(),
+                          'expression': implicit_expression.group(1).strip(),
+                          'kind': 'EXPRESSION_ALIAS'})
+            continue
+        gaps.append('WILDCARD_OR_COMPLEX_EXPRESSION')
+    return items, sorted(set(gaps))
+
+
+def projection(sql):
+    """Compatibility wrapper returning only parsed output names and gaps."""
+    items, gaps = projection_details(sql)
+    return sorted(set(item['output'] for item in items)), gaps
+
+
+def _normalize_expression(value):
+    return re.sub(r'\s+', '', value or '').replace(chr(96), '').lower()
+
+
+def _column_change_assessment(old_item, current_items):
+    same_expression = next((
+        item for item in current_items
+        if _normalize_expression(item.get('expression')) ==
+           _normalize_expression(old_item.get('expression'))
+        and item.get('output') != old_item.get('output')), None)
+    change_kind = 'OUTPUT_ALIAS_RENAMED' if same_expression else 'OUTPUT_COLUMN_REMOVED'
+    replacement = same_expression.get('output') if same_expression else None
+    source_column = _simple_column(old_item.get('expression') or '')
+    if source_column and source_column == old_item.get('output'):
+        sql_sort_assessment = 'BASE_COLUMN_MAY_STILL_BE_ORDERABLE'
+    else:
+        sql_sort_assessment = 'REMOVED_ALIAS_OR_EXPRESSION_HAS_HIGHER_ORDER_RISK'
+    return change_kind, replacement, sql_sort_assessment
+
 
 
 def selects(text, path):
@@ -133,7 +199,8 @@ def selects(text, path):
             continue
         body = match.group(2)
         visible = re.sub(r'<[^>]*>', lambda item: ' ' * len(item.group()), body)
-        cols, gaps = projection(visible)
+        projection_items, gaps = projection_details(visible)
+        cols = sorted(set(item['output'] for item in projection_items))
         from_offset = _top_level_from_offset(visible)
         if from_offset is None:
             gaps.append('UNRESOLVED_SELECT_BOUNDARY')
@@ -144,6 +211,7 @@ def selects(text, path):
             'line': text.count('\n', 0, match.start()) + 1,
             'end_line': text.count('\n', 0, match.end()) + 1,
             'columns': cols,
+            'projection_items': projection_items,
             'gaps': sorted(set(gaps)),
             'sql_excerpt': re.sub(r'\s+', ' ', body).strip()[:600]}
     return result
