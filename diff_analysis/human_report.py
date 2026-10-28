@@ -470,13 +470,27 @@ def write_html(root, release, specs, reviews, manifest=None):
             for ref in candidate['parameter_sort_sources']:
                 out.append('<p>%s:%s　%s　<code>%s</code></p>' %
                            (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(ref['evidence'])))
+        if candidate.get('controller_endpoints'):
+            out.append('<p><b>Controller / HTTP 锚点：</b></p>')
+            for ref in candidate['controller_endpoints']:
+                out.append('<p>%s %s　%s:%s　%s.%s</p>' %
+                           (esc(ref.get('http_method')), esc(ref.get('url')),
+                            esc(ref.get('path')), esc(ref.get('line')),
+                            esc(ref.get('controller_class') or '未知Controller'),
+                            esc(ref.get('controller_method') or '未知方法')))
+        if candidate.get('http_frontend_references'):
+            out.append('<p><b>HTTP 路径与排序字段同文件证据：</b></p>')
+            for ref in candidate['http_frontend_references']:
+                out.append('<p>%s @ %s / %s:%s　%s　<code>%s</code></p>' %
+                           (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
+                            esc(ref['line']), esc(ref.get('url')), esc(ref['evidence'])))
         if candidate.get('frontend_references'):
             out.append('<p><b>前端同名排序字段（补充证据，尚未绑定接口）：</b></p>')
             for ref in candidate['frontend_references'][:10]:
                 out.append('<p>%s @ %s / %s:%s　<code>%s</code></p>' %
                            (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
                             esc(ref['line']), esc(ref['evidence'])))
-        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；HIGH/MEDIUM 只表示静态绑定证据更强，仍需结合接口、数据库方言和运行时参数确认。</p>')
+        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；HIGH/MEDIUM/LOW 只表示静态绑定证据强弱。HTTP 同文件证据也不是完整前端数据流证明，仍需结合接口参数、数据库方言和运行时请求确认。</p>')
         out.append('</article>')
     if query_contract.get('omissions'):
         out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
@@ -605,7 +619,7 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('</article>')
     if not alerts and not resource_groups:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
-    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段，关联 Java/PageHelper 和 Vue/JS/TS 中的排序引用；字段删除或改名仍被使用时列为静态待确认项，区分结果字段缺失与 SQL ORDER BY 合法性，保留两侧 SHA、证据及动态 SQL 解析缺口。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
+    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段，沿 Mapper→调用方→Controller/HTTP→前端排序线索追踪；字段删除或改名仍被固定/动态排序使用时列为待确认项，区分结果字段缺失与 SQL ORDER BY 合法性，并保留两侧 SHA、证据等级和解析缺口。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
     for project in sorted({l['project'] for l, _, _, _ in allfiles}): out.append('<option>' + esc(project) + '</option>')
     out.append('</select><select id="ticket" onchange="filter()"><option value="">全部工单</option>')
