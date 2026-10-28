@@ -398,6 +398,106 @@ def caller_sort_evidence(text, path, caller, column):
     return direct, dynamic
 
 
+def _join_http_path(base, method):
+    base = (base or '').strip()
+    method = (method or '').strip()
+    if not base and not method:
+        return '/'
+    value = '/'.join(part.strip('/') for part in (base, method) if part.strip('/'))
+    return '/' + value if value else '/'
+
+
+def _endpoint_for_caller(text, caller):
+    if caller.get('caller_start') is None or caller.get('caller_end') is None:
+        return None
+    fragment = text[caller['caller_start']:caller['caller_end']]
+    opening = fragment.find('{')
+    header = fragment if opening < 0 else fragment[:opening]
+    mapping = HTTP_MAPPING.search(header)
+    if not mapping:
+        return None
+    class_mapping = CLASS_REQUEST_MAPPING.search(text)
+    base = class_mapping.group(1) if class_mapping else ''
+    annotation = mapping.group(1)
+    path = mapping.group(2) or ''
+    http_method = annotation[:-7].upper() if annotation.lower().endswith('mapping') else annotation.upper()
+    if annotation.lower() == 'requestmapping':
+        http_method = 'REQUEST'
+    return {
+        'path': caller['path'],
+        'line': caller.get('line'),
+        'controller_class': caller.get('caller_class'),
+        'controller_method': caller.get('caller_method'),
+        'http_method': http_method,
+        'url': _join_http_path(base, path),
+        'binding': 'TYPED_SERVICE_CALL_IN_MAPPED_CONTROLLER',
+        'evidence': caller.get('evidence', '')}
+
+
+def controller_endpoints(files, mapper_callers_list):
+    """Trace one typed caller hop from Mapper caller method to mapped Controller."""
+    endpoints = []
+    for mapper_caller in mapper_callers_list:
+        source = files.get(mapper_caller.get('path'), '')
+        direct = _endpoint_for_caller(source, mapper_caller)
+        if direct:
+            direct['service_binding'] = 'MAPPER_CALLED_DIRECTLY_FROM_CONTROLLER'
+            endpoints.append(direct)
+        method = mapper_caller.get('caller_method')
+        types = mapper_caller.get('caller_types') or []
+        if not method or not types:
+            continue
+        for upper in typed_method_callers(
+                files, types, method, 'TYPED_SERVICE_METHOD_CALL'):
+            endpoint = _endpoint_for_caller(files.get(upper['path'], ''), upper)
+            if endpoint:
+                endpoint['service_types'] = types
+                endpoint['service_method'] = method
+                endpoint['service_binding'] = 'TYPED_SERVICE_METHOD_CALL'
+                endpoints.append(endpoint)
+    unique = {}
+    for item in endpoints:
+        key = (item['path'], item['controller_method'], item['http_method'], item['url'])
+        unique[key] = item
+    return list(unique.values())
+
+
+def endpoint_frontend_references(snapshots, entries, endpoints, column):
+    """Bind exact endpoint literal and sort field only when both appear in one front-end file."""
+    result = []
+    urls = sorted(set(item.get('url') for item in endpoints if item.get('url') not in (None, '', '/')))
+    if not urls:
+        return result
+    for (project, side), sources in snapshots.items():
+        if side != 'head':
+            continue
+        for path, text in sources.items():
+            if Path(path).suffix.lower() not in {'.vue', '.js', '.jsx', '.ts', '.tsx'}:
+                continue
+            refs = scan_references(text, path, column)
+            if not refs:
+                continue
+            for url in urls:
+                literal = re.search(r'["\x27]' + re.escape(url) + r'["\x27]', text)
+                if not literal:
+                    continue
+                for ref in refs:
+                    result.append({
+                        'project': project,
+                        'sha': entries[project]['head'],
+                        'path': path,
+                        'line': ref['line'],
+                        'kind': ref['kind'],
+                        'url': url,
+                        'binding': 'HTTP_PATH_AND_SORT_FIELD_SAME_FILE',
+                        'evidence': ref['evidence']})
+    unique = {}
+    for item in result:
+        key = (item['project'], item['path'], item['line'], item['url'], item['kind'])
+        unique[key] = item
+    return list(unique.values())
+
+
 def _type_sort_sources(files, type_name, column):
     if not type_name:
         return []
