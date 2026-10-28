@@ -445,6 +445,21 @@ def write_html(root, release, specs, reviews, manifest=None):
                         esc(declaration['path']), esc(declaration['line'])))
         else:
             out.append('<p class="gap"><b>Mapper 方法绑定：</b>未确认；不能仅凭 namespace/select id 推断 Java 调用链。</p>')
+        detail = candidate.get('deleted_projection') or {}
+        change_kind = candidate.get('column_change_kind')
+        replacement = candidate.get('replacement_column')
+        sort_assessment = candidate.get('sql_sort_assessment')
+        if change_kind == 'OUTPUT_ALIAS_RENAMED':
+            out.append('<p><b>输出变化：</b>%s 已改名为 %s；旧表达式：<code>%s</code></p>' %
+                       (esc(candidate['deleted_column']), esc(replacement),
+                        esc(detail.get('expression'))))
+        else:
+            out.append('<p><b>输出变化：</b>%s 已从 SELECT 输出中移除；旧表达式：<code>%s</code></p>' %
+                       (esc(candidate['deleted_column']), esc(detail.get('expression'))))
+        if sort_assessment == 'BASE_COLUMN_MAY_STILL_BE_ORDERABLE':
+            out.append('<p class="gap"><b>SQL 排序判断：</b>旧输出来自同名底层列；即使不再 SELECT 返回，该列在部分数据库/查询结构下仍可能可用于 ORDER BY，不能直接判定 SQL 会失败。</p>')
+        elif sort_assessment == 'REMOVED_ALIAS_OR_EXPRESSION_HAS_HIGHER_ORDER_RISK':
+            out.append('<p class="gap"><b>SQL 排序判断：</b>旧输出依赖别名或表达式；别名删除/改名后继续按旧名排序的风险更高，但仍需结合最终 SQL 和数据库方言确认。</p>')
         out.append('<p>旧版 SQL：<code>%s</code>；新版 SQL：<code>%s</code></p>' %
                    (esc(candidate['old']['sql_excerpt']), esc(candidate['new']['sql_excerpt'])))
         if candidate.get('mapper_callers'):
