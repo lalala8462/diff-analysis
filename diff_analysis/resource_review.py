@@ -84,6 +84,8 @@ def normalized_candidates(dependency_scope):
             external_by_change[row["change_id"]].append({
                 "external_kind": surface.get("external_kind"),
                 "priority": surface.get("priority"),
+                "binding": surface.get("binding"),
+                "mybatis_statement": surface.get("mybatis_statement"),
                 "side": surface.get("side"),
                 "path": surface.get("path"),
                 "line": surface.get("line"),
