@@ -9,7 +9,9 @@ from pathlib import Path
 
 from .gitops import git
 from .source_index import source_snapshot_index
-from .query_contract import (\n    java_method_spans, mapper_callers, mapper_declaration, typed_method_callers,\n    _declared_callable_types, _line)
+from .query_contract import (
+    java_method_spans, mapper_callers, mapper_declaration, typed_method_callers,
+    _declared_callable_types, _line)
 
 
 VERSION = "external-influence-v1"
