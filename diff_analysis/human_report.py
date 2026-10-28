@@ -430,18 +430,53 @@ def write_html(root, release, specs, reviews, manifest=None):
     out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
     out.append('<section><h2>优先确认 <span class="badge">%d 项</span></h2>' % sdk['human_priority_count'])
     for candidate in query_candidates:
-        out.append('<article class="card alert"><b>查询结果列与排序参数契约候选：%s / %s / %s</b>' %
-                   (esc(candidate['project']), esc(candidate['select_id']), esc(candidate['deleted_column'])))
-        out.append('<p>旧版 %s → 新版 %s；Mapper：%s，namespace：%s</p>' %
-                   (esc(candidate['base_sha']), esc(candidate['head_sha']),
+        out.append('<article class="card alert"><b>查询结果列与排序参数契约候选 [%s]：%s / %s / %s</b>' %
+                   (esc(candidate.get('priority', 'UNKNOWN')), esc(candidate['project']),
+                    esc(candidate['select_id']), esc(candidate['deleted_column'])))
+        out.append('<p>状态：%s；旧版 %s → 新版 %s；Mapper XML：%s；namespace：%s</p>' %
+                   (esc(candidate.get('status')), esc(candidate['base_sha']), esc(candidate['head_sha']),
                     esc(candidate['path']), esc(candidate['namespace'])))
-        out.append('<p>SELECT 输出列消失，但以下固定版本中存在同名排序引用。仅为静态候选，不证明 SQL ORDER BY 一定失效或引用已绑定该 Mapper。</p>')
+        if candidate.get('change_ids'):
+            out.append('<p>对应最终净差异：%s</p>' % esc('、'.join(candidate['change_ids'])))
+        declaration = candidate.get('mapper_declaration')
+        if declaration:
+            out.append('<p><b>Mapper 方法绑定：</b>%s.%s　%s:%s</p>' %
+                       (esc(declaration['namespace']), esc(declaration['method']),
+                        esc(declaration['path']), esc(declaration['line'])))
+        else:
+            out.append('<p class="gap"><b>Mapper 方法绑定：</b>未确认；不能仅凭 namespace/select id 推断 Java 调用链。</p>')
         out.append('<p>旧版 SQL：<code>%s</code>；新版 SQL：<code>%s</code></p>' %
                    (esc(candidate['old']['sql_excerpt']), esc(candidate['new']['sql_excerpt'])))
-        for ref in candidate['references']:
-            out.append('<p>%s @ %s / %s:%s <code>%s</code></p>' %
-                       (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
-                        esc(ref['line']), esc(ref['evidence'])))
+        if candidate.get('mapper_callers'):
+            out.append('<p><b>已绑定 Mapper 调用位置：</b></p>')
+            for ref in candidate['mapper_callers']:
+                out.append('<p>%s:%s　%s　<code>%s</code></p>' %
+                           (esc(ref['path']), esc(ref['line']), esc(ref.get('caller_method') or '方法范围未知'),
+                            esc(ref['evidence'])))
+        if candidate.get('bound_sort_references'):
+            out.append('<p><b>同一调用方法内的固定排序证据：</b></p>')
+            for ref in candidate['bound_sort_references']:
+                out.append('<p>%s:%s　%s　<code>%s</code></p>' %
+                           (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(ref['evidence'])))
+        if candidate.get('dynamic_sort_references'):
+            out.append('<p><b>同一调用方法内的动态排序传播：</b></p>')
+            for ref in candidate['dynamic_sort_references']:
+                suffix = ('；参数类型 ' + str(ref.get('receiver_type'))) if ref.get('receiver_type') else ''
+                out.append('<p>%s:%s　%s%s　<code>%s</code></p>' %
+                           (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(suffix),
+                            esc(ref['evidence'])))
+        if candidate.get('parameter_sort_sources'):
+            out.append('<p><b>排序参数类型中的字段来源：</b></p>')
+            for ref in candidate['parameter_sort_sources']:
+                out.append('<p>%s:%s　%s　<code>%s</code></p>' %
+                           (esc(ref['path']), esc(ref['line']), esc(ref['kind']), esc(ref['evidence'])))
+        if candidate.get('frontend_references'):
+            out.append('<p><b>前端同名排序字段（补充证据，尚未绑定接口）：</b></p>')
+            for ref in candidate['frontend_references'][:10]:
+                out.append('<p>%s @ %s / %s:%s　<code>%s</code></p>' %
+                           (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
+                            esc(ref['line']), esc(ref['evidence'])))
+        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；HIGH/MEDIUM 只表示静态绑定证据更强，仍需结合接口、数据库方言和运行时参数确认。</p>')
         out.append('</article>')
     if query_contract.get('omissions'):
         out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
