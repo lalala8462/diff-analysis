@@ -92,7 +92,7 @@ HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针�
 
 `query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，检测删去的字段名是否仍出现在固定 HEAD Java、Vue、JS、TS 排序引用中，输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示。保留 Mapper namespace、select id、SQL 片段、双方 SHA、消费方文件和行号。
 
-**边界：** 当前采用词法候选，不是精确 Mapper→Service→HTTP→前端绑定；字段同名可能误匹配，暂不支持完整动态 SQL、表达式、通配符与前端配置传递。无法解析时保留 omissions，不直接报缺陷。SQL SELECT 未输出字段也不必然代表该字段无法用于 ORDER BY。后续需增强 Mapper 精确绑定、查询/响应 DTO、接口端点及前端请求追踪。
+**边界：** 当前采用词法候选，不是精确 Mapper→Service→HTTP→前端绑定；字段同名可能误匹配，暂不支持完整动态 SQL、复杂表达式、通配符与前端配置传递。无法解析时保留 omissions，不直接报缺陷。SQL SELECT 未输出字段也不必然代表该字段无法用于 ORDER BY。后续需增强 Mapper 精确绑定、查询/响应 DTO、接口端点及前端请求追踪。
 
 ## 阶段 3：Redis / 反射 / Spring Bean（首期实现）
 
