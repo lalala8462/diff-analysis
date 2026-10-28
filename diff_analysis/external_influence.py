@@ -148,14 +148,35 @@ def _classify_caller(files, caller, binding):
 
 
 def one_hop_external_surfaces(files, text, path, span):
-    """Direct surface plus at most one explicit typed caller hop."""
+    """Direct surface plus at most one local or explicit typed caller hop."""
     direct = [
         {**item, "binding": "DIRECT_CHANGED_METHOD"}
         for item in classify_method(text, path, span)]
+    indirect = []
+
+    # Same-class helper calls are common in controllers/listeners. Treat only
+    # one lexical call hop as evidence; do not recurse through helper chains.
+    call_pattern = re.compile(
+        r'\\b(?:this\\s*\\.\\s*)?' + re.escape(span["name"]) + r'\\s*\\(')
+    for caller_span in java_method_spans(text):
+        if caller_span["start"] == span["start"]:
+            continue
+        body = text[caller_span["start"]:caller_span["end"]]
+        opening = body.find("{")
+        if opening < 0 or not call_pattern.search(body[opening + 1:]):
+            continue
+        for item in classify_method(text, path, caller_span):
+            indirect.append({
+                **item,
+                "priority": "MEDIUM",
+                "binding": "ONE_LOCAL_CALLER_HOP",
+                "reason": (
+                    "Changed helper is called directly by an external inbound "
+                    "method in the same class; deeper call-chain proof is not required")})
+
     type_names = _declared_callable_types(text)
     upper = typed_method_callers(
         files, type_names, span["name"], "ONE_TYPED_CALLER_HOP")
-    indirect = []
     for caller in upper:
         for item in _classify_caller(files, caller, "ONE_TYPED_CALLER_HOP"):
             indirect.append({
