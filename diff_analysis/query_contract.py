@@ -1,22 +1,53 @@
-"""Read-only fixed-SHA query projection and sorting contract candidates."""
+"""Read-only fixed-SHA query-result/sorting contract analysis.
+
+The scanner is deliberately conservative:
+MyBatis namespace+select id is first bound to a Java Mapper declaration, then
+Mapper calls and sorting propagation in the same Java caller method are used
+to strengthen a candidate. Front-end matches remain supplemental evidence
+until an HTTP endpoint/request binding is proved.
+"""
 import re
 from pathlib import Path
+
 from .gitops import git
 from .source_index import source_snapshot_index
 
-VERSION = "query-contract-v1"
+
+VERSION = "query-contract-v2"
 EXTS = {".xml", ".java", ".vue", ".js", ".jsx", ".ts", ".tsx"}
+MAX_FILES = 4000
+MAX_FILE_BYTES = 500000
+MAX_REFERENCES = 30
+
 SELECT = re.compile(r'<select\b([^>]*)>(.*?)</select\s*>', re.I | re.S)
 ATTR = re.compile(r'\b(id|namespace)\s*=\s*["\x27]([^"\x27]+)', re.I)
 MAPPER = re.compile(r'<mapper\b([^>]*)>', re.I)
-SORT = re.compile(r'\b(?:sortName|sortBy|orderBy|prop)\b\s*[:=]\s*["\x27]([A-Za-z_]\w*)|setSortName\s*\(\s*["\x27]([A-Za-z_]\w*)["\x27]\s*\)|\bORDER\s+BY\s+([A-Za-z_]\w*)', re.I)
-DYNAMIC = re.compile(r'<(?:if|choose|when|foreach|include|trim|bind)\b|\$\{|#\{', re.I)
+DYNAMIC_SQL = re.compile(
+    r'<(?:if|choose|when|otherwise|foreach|include|trim|bind)\b|\$\{|#\{', re.I)
+PACKAGE = re.compile(r'\bpackage\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;')
+TYPE = re.compile(r'\b(?:class|interface)\s+([A-Za-z_]\w*)\b')
+JAVA_FIELD_SORT = re.compile(
+    r'\b(?:sortName|sortBy|orderBy)\b\s*=\s*["\x27]([A-Za-z_]\w*)'
+    r'|setSortName\s*\(\s*["\x27]([A-Za-z_]\w*)["\x27]\s*\)', re.I)
+JAVA_ORDER_LITERAL = re.compile(
+    r'\bORDER\s+BY\s+([A-Za-z_]\w*)(?:\s+(?:ASC|DESC))?\b', re.I)
+PAGEHELPER_LITERAL = re.compile(
+    r'\b(?:startPage|orderBy)\s*\([^;\n]*?["\x27]([A-Za-z_]\w*)\s+'
+    r'(?:asc|desc)["\x27]', re.I)
+FRONT_SORT = re.compile(
+    r'\b(?:sortName|sortBy|orderBy|prop)\b\s*(?:=|:)\s*["\x27]([A-Za-z_]\w*)["\x27]'
+    r'|\b(?:sort-name|sort-by|order-by|prop)\s*=\s*["\x27]([A-Za-z_]\w*)["\x27]',
+    re.I)
+GET_ORDER = re.compile(r'\b([A-Za-z_]\w*)\.getOrderBy\s*\(')
+PAGEHELPER_DYNAMIC = re.compile(
+    r'\b(?:PageHelper\s*\.\s*)?(?:startPage|orderBy)\s*\([^;\n]*getOrderBy\s*\(',
+    re.I)
 
 
 def projection(sql):
-    """Conservative top-level SELECT projection parser; no inferred columns."""
-    sql = re.sub(r'/\\*[\\s\\S]*?\\*/|--[^\\n]*', ' ', sql)
-    start = re.search(r'\\bselect\\b', sql, re.I)
+    """Parse only a top-level SELECT list; uncertain expressions become gaps."""
+    sql = re.sub(r'/\*[\s\S]*?\*/|--[^\n]*', ' ', sql)
+    start = re.search(r'\bselect\b', sql, re.I)
     if not start:
         return [], ['UNRESOLVED_SELECT']
     depth, quote, chunks, begin, i = 0, None, [], start.end(), start.end()
@@ -51,10 +82,13 @@ def projection(sql):
         return [], ['UNBALANCED_EXPRESSION']
     cols, gaps = [], []
     for part in chunks:
-        alias = re.search(r'\\bAS\\s+([A-Za-z_]\\w*)$', part, re.I)
-        simple = re.fullmatch(r'(?:[A-Za-z_]\\w*\\.)?([A-Za-z_]\\w*)', part)
-        if alias or simple:
-            cols.append((alias or simple).group(1).lower())
+        alias = re.search(r'\bAS\s+([A-Za-z_]\w*)$', part, re.I)
+        simple = re.fullmatch(r'(?:[A-Za-z_]\w*\.)?([A-Za-z_]\w*)', part)
+        implicit = re.fullmatch(
+            r'(?:[A-Za-z_]\w*\.)?[A-Za-z_]\w*\s+([A-Za-z_]\w*)', part)
+        chosen = alias or simple or implicit
+        if chosen:
+            cols.append(chosen.group(1).lower())
         else:
             gaps.append('WILDCARD_OR_COMPLEX_EXPRESSION')
     return sorted(set(cols)), sorted(set(gaps))
@@ -70,31 +104,277 @@ def selects(text, path):
             continue
         body = match.group(2)
         cols, gaps = projection(re.sub(r'<[^>]*>', ' ', body))
-        if DYNAMIC.search(body):
+        if DYNAMIC_SQL.search(body):
             gaps.append('DYNAMIC_SQL')
         result[(namespace, attrs['id'])] = {
-            'path': path, 'line': text.count('\n', 0, match.start()) + 1,
-            'columns': cols, 'gaps': gaps, 'sql_excerpt': body[:400]}
+            'path': path,
+            'line': text.count('\n', 0, match.start()) + 1,
+            'end_line': text.count('\n', 0, match.end()) + 1,
+            'columns': cols,
+            'gaps': sorted(set(gaps)),
+            'sql_excerpt': re.sub(r'\s+', ' ', body).strip()[:600]}
     return result
 
 
+def _line(text, offset):
+    return text.count('\n', 0, offset) + 1
+
+
+def _evidence(text, path, match, kind):
+    line = _line(text, match.start())
+    lines = text.splitlines()
+    return {'path': path, 'line': line, 'kind': kind,
+            'evidence': lines[line - 1].strip()[:250] if line <= len(lines) else ''}
+
+
 def scan_references(text, path, column):
+    """Find literal result/sort references; these are evidence, not bindings."""
+    suffix = Path(path).suffix.lower()
     found = []
-    for match in SORT.finditer(text):
-        value = next((g for g in match.groups() if g), '')
-        if value.lower() != column:
+    patterns = []
+    if suffix == '.java':
+        patterns = [(JAVA_FIELD_SORT, 'JAVA_SORT_LITERAL'),
+                    (JAVA_ORDER_LITERAL, 'JAVA_SQL_ORDER_LITERAL'),
+                    (PAGEHELPER_LITERAL, 'PAGEHELPER_LITERAL_SORT')]
+    elif suffix in {'.vue', '.js', '.jsx', '.ts', '.tsx'}:
+        patterns = [(FRONT_SORT, 'FRONTEND_SORT_FIELD')]
+    for pattern, kind in patterns:
+        for match in pattern.finditer(text):
+            value = next((group for group in match.groups() if group), '')
+            if value.lower() == column:
+                found.append(_evidence(text, path, match, kind))
+    unique = {}
+    for item in found:
+        unique[(item['path'], item['line'], item['kind'], item['evidence'])] = item
+    return list(unique.values())
+
+
+def _java_identity(text):
+    package = PACKAGE.search(text)
+    typ = TYPE.search(text)
+    if not typ:
+        return '', ''
+    simple = typ.group(1)
+    prefix = package.group(1) + '.' if package else ''
+    return prefix + simple, simple
+
+
+def _mask_java(text):
+    """Mask comments and strings while preserving offsets and newlines."""
+    chars = list(text)
+    i, quote = 0, None
+    while i < len(chars):
+        if quote:
+            if chars[i] == '\\' and i + 1 < len(chars):
+                if chars[i] != '\n':
+                    chars[i] = ' '
+                if chars[i + 1] != '\n':
+                    chars[i + 1] = ' '
+                i += 2
+                continue
+            current = chars[i]
+            if current == quote:
+                chars[i] = ' '
+                quote = None
+            elif current != '\n':
+                chars[i] = ' '
+            i += 1
             continue
-        line = text.count('\n', 0, match.start()) + 1
-        found.append({'path': path, 'line': line,
-                      'evidence': text.splitlines()[line - 1].strip()[:250]})
-    if Path(path).suffix.lower() == '.java':
-        # Fixed default PageHelper order expressions, e.g. startPage(1, 10, "state desc").
-        for match in re.finditer(r'\b(?:startPage|orderBy)\s*\([^;\n]*?["\x27]([A-Za-z_]\w*)\s+(?:asc|desc)["\x27]', text, re.I):
-            if match.group(1).lower() == column:
-                line = text.count('\n', 0, match.start()) + 1
-                found.append({'path': path, 'line': line,
-                              'evidence': text.splitlines()[line - 1].strip()[:250]})
-    return found
+        if chars[i] in ('"', "'"):
+            quote = chars[i]
+            chars[i] = ' '
+            i += 1
+            continue
+        if i + 1 < len(chars) and chars[i] == '/' and chars[i + 1] == '/':
+            chars[i] = chars[i + 1] = ' '
+            i += 2
+            while i < len(chars) and chars[i] != '\n':
+                chars[i] = ' '
+                i += 1
+            continue
+        if i + 1 < len(chars) and chars[i] == '/' and chars[i + 1] == '*':
+            chars[i] = chars[i + 1] = ' '
+            i += 2
+            while i + 1 < len(chars) and not (
+                    chars[i] == '*' and chars[i + 1] == '/'):
+                if chars[i] != '\n':
+                    chars[i] = ' '
+                i += 1
+            if i + 1 < len(chars):
+                chars[i] = chars[i + 1] = ' '
+                i += 2
+            continue
+        i += 1
+    return ''.join(chars)
+
+
+def _brace_end(masked, opening):
+    depth = 0
+    for pos in range(opening, len(masked)):
+        if masked[pos] == '{':
+            depth += 1
+        elif masked[pos] == '}':
+            depth -= 1
+            if depth == 0:
+                return pos + 1
+    return None
+
+
+def java_method_spans(text):
+    """Return conservative Java method ranges, excluding declarations without bodies."""
+    masked = _mask_java(text)
+    pattern = re.compile(
+        r'(?m)^[ \t]*(?:@[A-Za-z_][\w.]*[^\n]*\n[ \t]*)*'
+        r'(?:(?:public|protected|private|static|final|synchronized|default|native)\s+)*'
+        r'(?:[A-Za-z_][\w.$<>\[\],? \t]*\s+)+([A-Za-z_]\w*)\s*'
+        r'\([^;{}]*\)\s*(?:throws\s+[^{]+)?\{')
+    spans = []
+    for match in pattern.finditer(masked):
+        opening = masked.find('{', match.start(), match.end())
+        ending = _brace_end(masked, opening)
+        if ending:
+            spans.append({'name': match.group(1), 'start': match.start(),
+                          'end': ending, 'line': _line(text, match.start())})
+    return spans
+
+
+def _enclosing_method(spans, offset):
+    candidates = [span for span in spans if span['start'] <= offset < span['end']]
+    return min(candidates, key=lambda item: item['end'] - item['start']) if candidates else None
+
+
+def mapper_declaration(files, namespace, select_id):
+    """Bind MyBatis namespace/select id to a Java mapper/interface declaration."""
+    if not namespace:
+        return None
+    method_pattern = re.compile(r'\b' + re.escape(select_id) +
+                                r'\s*\([^;{}]*\)\s*(?:throws\s+[^;{]+)?[;{]')
+    for path, text in files.items():
+        if not path.endswith('.java'):
+            continue
+        fqcn, simple = _java_identity(text)
+        if fqcn != namespace:
+            continue
+        match = method_pattern.search(_mask_java(text))
+        if match:
+            return {'namespace': namespace, 'class': simple, 'method': select_id,
+                    'path': path, 'line': _line(text, match.start()),
+                    'binding': 'NAMESPACE_SELECT_TO_JAVA_METHOD'}
+    return None
+
+
+def mapper_callers(files, declaration):
+    """Find calls through variables whose declared type is the bound Mapper type."""
+    if not declaration:
+        return []
+    mapper_type = declaration['class']
+    method = declaration['method']
+    callers = []
+    variable_pattern = re.compile(
+        r'\b' + re.escape(mapper_type) +
+        r'(?:\s*<[^;=(){}]+>)?\s+([A-Za-z_]\w*)\b')
+    for path, text in files.items():
+        if not path.endswith('.java'):
+            continue
+        masked = _mask_java(text)
+        variables = sorted(set(variable_pattern.findall(masked)))
+        if not variables:
+            continue
+        spans = java_method_spans(text)
+        for variable in variables:
+            call_pattern = re.compile(r'\b' + re.escape(variable) + r'\s*\.\s*' +
+                                      re.escape(method) + r'\s*\(')
+            for match in call_pattern.finditer(masked):
+                span = _enclosing_method(spans, match.start())
+                callers.append({
+                    'path': path,
+                    'line': _line(text, match.start()),
+                    'caller_method': span['name'] if span else None,
+                    'caller_start': span['start'] if span else None,
+                    'caller_end': span['end'] if span else None,
+                    'mapper_variable': variable,
+                    'binding': 'DECLARED_MAPPER_TYPE_AND_METHOD_CALL',
+                    'evidence': text.splitlines()[_line(text, match.start()) - 1].strip()[:250]})
+    return callers
+
+
+def _variable_type(text, variable, start, end):
+    fragment = _mask_java(text[start:end])
+    matches = list(re.finditer(
+        r'\b([A-Za-z_]\w*(?:\s*<[^;=(){}]+>)?)\s+' +
+        re.escape(variable) + r'\b', fragment))
+    if not matches:
+        return None
+    value = re.sub(r'\s*<.*', '', matches[-1].group(1)).strip()
+    return value.split('.')[-1]
+
+
+def caller_sort_evidence(text, path, caller, column):
+    """Sorting evidence is strong only when it occurs in the bound mapper caller."""
+    if caller.get('caller_start') is None or caller.get('caller_end') is None:
+        return [], []
+    start, end = caller['caller_start'], caller['caller_end']
+    fragment = text[start:end]
+    direct = scan_references(fragment, path, column)
+    for item in direct:
+        item['line'] += text.count('\n', 0, start)
+        item['binding'] = 'SAME_METHOD_AS_MAPPER_CALL'
+    dynamic = []
+    for match in GET_ORDER.finditer(fragment):
+        line = _line(text, start + match.start())
+        receiver = match.group(1)
+        dynamic.append({
+            'path': path, 'line': line, 'kind': 'DYNAMIC_GET_ORDER_BY',
+            'receiver': receiver,
+            'receiver_type': _variable_type(text, receiver, start, end),
+            'binding': 'SAME_METHOD_AS_MAPPER_CALL',
+            'evidence': text.splitlines()[line - 1].strip()[:250]})
+    for match in PAGEHELPER_DYNAMIC.finditer(fragment):
+        line = _line(text, start + match.start())
+        dynamic.append({
+            'path': path, 'line': line, 'kind': 'PAGEHELPER_DYNAMIC_SORT',
+            'binding': 'SAME_METHOD_AS_MAPPER_CALL',
+            'evidence': text.splitlines()[line - 1].strip()[:250]})
+    unique = {}
+    for item in direct + dynamic:
+        key = (item['path'], item['line'], item['kind'], item.get('receiver'))
+        unique[key] = item
+    direct = [item for item in unique.values()
+              if item['kind'] not in ('DYNAMIC_GET_ORDER_BY', 'PAGEHELPER_DYNAMIC_SORT')]
+    dynamic = [item for item in unique.values()
+               if item['kind'] in ('DYNAMIC_GET_ORDER_BY', 'PAGEHELPER_DYNAMIC_SORT')]
+    return direct, dynamic
+
+
+def _type_sort_sources(files, type_name, column):
+    if not type_name:
+        return []
+    result = []
+    for path, text in files.items():
+        if not path.endswith('.java'):
+            continue
+        _, simple = _java_identity(text)
+        if simple == type_name:
+            result.extend(scan_references(text, path, column))
+    return result
+
+
+def _change_ids(ledger, path, old_select, new_select):
+    result = []
+    for change in ledger.get('final_changes', []):
+        if change.get('path') != path and change.get('old_path') != path:
+            continue
+        old_range = change.get('old_range', {})
+        new_range = change.get('new_range', {})
+        old_start, old_count = old_range.get('start', 0), old_range.get('count', 0)
+        new_start, new_count = new_range.get('start', 0), new_range.get('count', 0)
+        old_hit = old_count and old_start <= old_select['end_line'] and (
+            old_start + old_count - 1 >= old_select['line'])
+        new_hit = new_count and new_start <= new_select['end_line'] and (
+            new_start + new_count - 1 >= new_select['line'])
+        if old_hit or new_hit:
+            result.append(change['id'])
+    return sorted(set(result))
 
 
 def analyze_query_contracts(entries, ledgers, cache_dir):
@@ -107,13 +387,13 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
             try:
                 index, _ = source_snapshot_index(
                     entry['repo'], project, sha, Path(cache_dir) / 'indexes',
-                    extensions=EXTS, rules_version=VERSION, max_files=4000)
+                    extensions=EXTS, rules_version=VERSION, max_files=MAX_FILES)
                 omissions.extend({'project': project, 'side': side, **gap}
                                  for gap in index['omissions'])
                 files = {}
                 for item in index['files']:
                     raw = git(entry['repo'], 'cat-file', 'blob', item['blob_sha'])
-                    if len(raw) > 500000:
+                    if len(raw) > MAX_FILE_BYTES:
                         omissions.append({'project': project, 'side': side,
                                           'path': item['path'], 'reason': 'FILE_TOO_LARGE'})
                         continue
@@ -122,6 +402,7 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
             except (OSError, RuntimeError, ValueError) as exc:
                 omissions.append({'project': project, 'side': side,
                                   'reason': 'SCAN_FAILED', 'detail': type(exc).__name__})
+
     candidates = []
     for ledger in ledgers:
         project = ledger['project']
@@ -132,31 +413,122 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                 continue
             before, after = selects(old[path], path), selects(new[path], path)
             for key in sorted(set(before) & set(after)):
-                a, b = before[key], after[key]
-                if a['gaps'] or b['gaps']:
-                    omissions.append({'project': project, 'path': path,
-                                      'select': key[1], 'reason': 'INCOMPLETE_PROJECTION'})
+                previous, current = before[key], after[key]
+                if previous['gaps'] or current['gaps']:
+                    omissions.append({
+                        'project': project, 'path': path, 'select': key[1],
+                        'reason': 'INCOMPLETE_PROJECTION',
+                        'details': sorted(set(previous['gaps'] + current['gaps']))})
                     continue
-                for col in sorted(set(a['columns']) - set(b['columns'])):
-                    refs = []
+
+                declaration = mapper_declaration(new, key[0], key[1])
+                callers = mapper_callers(new, declaration)
+                if not declaration:
+                    omissions.append({
+                        'project': project, 'path': path, 'select': key[1],
+                        'reason': 'MAPPER_METHOD_NOT_BOUND', 'namespace': key[0]})
+
+                for column in sorted(set(previous['columns']) - set(current['columns'])):
+                    bound_direct, bound_dynamic = [], []
+                    parameter_sources = []
+                    for caller in callers:
+                        source = new.get(caller['path'], '')
+                        direct, dynamic = caller_sort_evidence(
+                            source, caller['path'], caller, column)
+                        for item in direct:
+                            item['caller_method'] = caller.get('caller_method')
+                            bound_direct.append(item)
+                        for item in dynamic:
+                            item['caller_method'] = caller.get('caller_method')
+                            bound_dynamic.append(item)
+                            if item.get('receiver_type'):
+                                parameter_sources.extend(_type_sort_sources(
+                                    new, item['receiver_type'], column))
+
+                    project_refs = []
+                    for source_path, source in new.items():
+                        if Path(source_path).suffix.lower() in EXTS:
+                            project_refs.extend(scan_references(source, source_path, column))
+
+                    frontend_refs = []
+                    # Front-end evidence may live in a separately registered project.
+                    # It never upgrades binding strength without HTTP endpoint evidence.
                     for (consumer, side), sources in snapshots.items():
-                        if side != 'head' or consumer != project:
+                        if side != 'head':
                             continue
                         for source_path, source in sources.items():
-                            if Path(source_path).suffix.lower() not in EXTS - {'.xml'}:
-                                continue
-                            refs.extend({'project': consumer, 'sha': entries[consumer]['head'], **ref}
-                                        for ref in scan_references(source, source_path, col))
-                    if refs:
-                        candidates.append({
-                            'kind': 'QUERY_RESULT_SORT_CONTRACT_CANDIDATE',
-                            'project': project, 'base_sha': ledger['base'],
-                            'head_sha': ledger['head'], 'namespace': key[0],
-                            'select_id': key[1], 'path': path, 'deleted_column': col,
-                            'old': a, 'new': b, 'references': refs[:20],
-                            'status': 'SAME_PROJECT_UNVERIFIED_BINDING',
-                            'limitation': 'Missing SELECT output does not prove ORDER BY invalid; references are lexical candidates'})
-                        if len(refs) > 20:
-                            omissions.append({'project': project, 'path': path,
-                                              'reason': 'REFERENCE_LIMIT', 'column': col})
-    return {'schema_version': VERSION, 'candidates': candidates, 'omissions': omissions}
+                            if Path(source_path).suffix.lower() in {
+                                    '.vue', '.js', '.jsx', '.ts', '.tsx'}:
+                                frontend_refs.extend({
+                                    'project': consumer,
+                                    'sha': entries[consumer]['head'],
+                                    'binding': 'FRONTEND_FIELD_ONLY_UNBOUND',
+                                    **item}
+                                    for item in scan_references(
+                                        source, source_path, column))
+
+                    if bound_direct:
+                        status = 'BOUND_CALLER_LITERAL_SORT'
+                        priority = 'HIGH'
+                    elif bound_dynamic and parameter_sources:
+                        status = 'BOUND_DYNAMIC_SORT_WITH_PARAMETER_SOURCE'
+                        priority = 'HIGH'
+                    elif bound_dynamic:
+                        status = 'BOUND_DYNAMIC_SORT_PARAMETER_UNRESOLVED'
+                        priority = 'MEDIUM'
+                    elif declaration and project_refs:
+                        status = 'MAPPER_BOUND_PROJECT_REFERENCE'
+                        priority = 'MEDIUM'
+                    elif project_refs:
+                        status = 'SAME_PROJECT_LEXICAL_REFERENCE'
+                        priority = 'LOW'
+                    else:
+                        # A projection removal with no surviving sort use is not a
+                        # query/sort contract alert.
+                        continue
+
+                    candidate = {
+                        'kind': 'QUERY_RESULT_SORT_CONTRACT_CANDIDATE',
+                        'project': project,
+                        'base_sha': ledger['base'],
+                        'head_sha': ledger['head'],
+                        'namespace': key[0],
+                        'select_id': key[1],
+                        'path': path,
+                        'deleted_column': column,
+                        'change_ids': _change_ids(
+                            ledger, path, previous, current),
+                        'old': previous,
+                        'new': current,
+                        'mapper_declaration': declaration,
+                        'mapper_callers': callers[:MAX_REFERENCES],
+                        'bound_sort_references': bound_direct[:MAX_REFERENCES],
+                        'dynamic_sort_references': bound_dynamic[:MAX_REFERENCES],
+                        'parameter_sort_sources': parameter_sources[:MAX_REFERENCES],
+                        'project_references': project_refs[:MAX_REFERENCES],
+                        'frontend_references': frontend_refs[:MAX_REFERENCES],
+                        'priority': priority,
+                        'status': status,
+                        'limitation': (
+                            'SELECT projection removal does not prove ORDER BY invalid; '
+                            'front-end references are not endpoint-bound until HTTP/request '
+                            'propagation is verified.')}
+                    candidates.append(candidate)
+
+                    for name, values in (
+                            ('mapper_callers', callers),
+                            ('project_references', project_refs),
+                            ('frontend_references', frontend_refs),
+                            ('parameter_sort_sources', parameter_sources)):
+                        if len(values) > MAX_REFERENCES:
+                            omissions.append({
+                                'project': project, 'path': path,
+                                'select': key[1], 'column': column,
+                                'reason': 'EVIDENCE_LIMIT', 'field': name,
+                                'max_locations': MAX_REFERENCES})
+
+    return {'schema_version': VERSION, 'candidates': candidates,
+            'omissions': omissions,
+            'warning': (
+                'Static evidence only. HIGH means a stronger source binding, '
+                'not a confirmed production defect.')}
