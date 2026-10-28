@@ -130,8 +130,10 @@ def normalized_candidates(dependency_scope):
             current["status"] = "MULTIPLE_STATIC_CANDIDATES_UNCONFIRMED"
     return {"schema_version": "resource-impact-index-v1",
             "candidates": sorted(merged.values(), key=lambda x: x["id"]),
-            "coverage_gaps": (dependency_scope.get("database", {}).get("omissions", []) +
-                              dependency_scope.get("shared_resources", {}).get("omissions", [])),
+            "coverage_gaps": (
+                dependency_scope.get("database", {}).get("omissions", []) +
+                dependency_scope.get("shared_resources", {}).get("omissions", []) +
+                dependency_scope.get("external_influence", {}).get("omissions", [])),
             "limitation": (
                 "Static project/resource/name candidates. External influence is a "
                 "direct inbound-surface signal, not whole-program reachability or "
