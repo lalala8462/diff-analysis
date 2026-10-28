@@ -1,6 +1,8 @@
 """Static query contract regression tests."""
 import unittest
-from diff_analysis.query_contract import (\n    caller_sort_evidence, mapper_callers, mapper_declaration, projection,\n    scan_references, selects)
+from diff_analysis.query_contract import (
+    caller_sort_evidence, mapper_callers, mapper_declaration, projection,
+    scan_references, selects)
 
 
 class QueryContractTests(unittest.TestCase):
