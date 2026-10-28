@@ -17,20 +17,19 @@ MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
 
 HTTP = re.compile(
-    r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\\b',
+    r'@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b',
     re.I)
 MQ = re.compile(
     r'@(RabbitListener|KafkaListener|JmsListener|SqsListener|'
-    r'RocketMQMessageListener|RocketMQListener)\\b', re.I)
+    r'RocketMQMessageListener|RocketMQListener)\b', re.I)
 WEBSOCKET = re.compile(
-    r'@(ServerEndpoint|MessageMapping|SubscribeMapping|OnMessage)\\b', re.I)
+    r'@(ServerEndpoint|MessageMapping|SubscribeMapping|OnMessage)\b', re.I)
 DUBBO_IMPORT = re.compile(
-    r'import\\s+(?:com\\.alibaba\\.dubbo|org\\.apache\\.dubbo)'
-    r'\\.config\\.annotation\\.(?:Service|DubboService)\\s*;')
-DUBBO_ANNOTATION = re.compile(r'@(DubboService|Service)\\b')
-SPRING_CONTROLLER = re.compile(r'@(RestController|Controller)\\b')
-CLASS = re.compile(r'\\b(?:public\\s+)?(?:abstract\\s+)?class\\s+([A-Za-z_]\\w*)\\b')
-
+    r'import\s+(?:com\.alibaba\.dubbo|org\.apache\.dubbo)'
+    r'\.config\.annotation\.(?:Service|DubboService)\s*;')
+DUBBO_ANNOTATION = re.compile(r'@(DubboService|Service)\b')
+SPRING_CONTROLLER = re.compile(r'@(RestController|Controller)\b')
+CLASS = re.compile(r'\b(?:public\s+)?(?:abstract\s+)?class\s+([A-Za-z_]\w*)\b')
 
 def _overlap(change_range, start, end):
     begin = int((change_range or {}).get("start") or 0)
@@ -104,7 +103,7 @@ def classify_method(text, path, span):
     dubbo_class = (
         "@DubboService" in class_header or
         (DUBBO_IMPORT.search(text) and DUBBO_ANNOTATION.search(class_header)))
-    if dubbo_class and re.search(r'\\bpublic\\b', header):
+    if dubbo_class and re.search(r'\bpublic\b', header):
         result.append({
             "external_kind": "DUBBO_RPC_SERVICE",
             "priority": "HIGH",
