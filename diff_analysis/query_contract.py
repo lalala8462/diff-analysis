@@ -478,6 +478,7 @@ def typed_method_callers(files, type_names, method, binding):
                     'caller_class': simple or None,
                     'caller_fqcn': fqcn or None,
                     'caller_types': callable_types,
+                    'caller_parameters': span.get('parameters', {}) if span else {},
                     'target_types': type_names,
                     'receiver_variable': variable,
                     'binding': binding,
@@ -527,10 +528,16 @@ def caller_sort_evidence(text, path, caller, column):
     for match in GET_ORDER.finditer(fragment):
         line = _line(text, start + match.start())
         receiver = match.group(1)
+        parameters = caller.get('caller_parameters') or {}
+        receiver_type = parameters.get(receiver) or _variable_type(
+            text, receiver, start, end)
         dynamic.append({
             'path': path, 'line': line, 'kind': 'DYNAMIC_GET_ORDER_BY',
             'receiver': receiver,
-            'receiver_type': _variable_type(text, receiver, start, end),
+            'receiver_type': receiver_type,
+            'receiver_source': ('METHOD_PARAMETER'
+                                if receiver in parameters
+                                else 'LOCAL_OR_FIELD'),
             'binding': 'SAME_METHOD_AS_MAPPER_CALL',
             'evidence': text.splitlines()[line - 1].strip()[:250]})
     for match in PAGEHELPER_DYNAMIC.finditer(fragment):
@@ -591,6 +598,7 @@ def _endpoint_for_caller(text, caller):
         'controller_method': caller.get('caller_method'),
         'http_method': http_method,
         'url': _join_http_path(base, path),
+        'request_parameters': caller.get('caller_parameters') or {},
         'binding': 'TYPED_SERVICE_CALL_IN_MAPPED_CONTROLLER',
         'evidence': caller.get('evidence', '')}
 
