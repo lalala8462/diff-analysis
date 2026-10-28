@@ -123,6 +123,102 @@ def classify_method(text, path, span):
     return result
 
 
+
+def _caller_span(caller):
+    if caller.get("caller_start") is None or caller.get("caller_end") is None:
+        return None
+    return {
+        "name": caller.get("caller_method"),
+        "start": caller["caller_start"],
+        "end": caller["caller_end"],
+        "line": caller.get("line"),
+        "parameters": caller.get("caller_parameters", {})}
+
+
+def _classify_caller(files, caller, binding):
+    span = _caller_span(caller)
+    text = files.get(caller.get("path") or "")
+    if not span or not text:
+        return []
+    return [
+        {**item, "binding": binding}
+        for item in classify_method(text, caller["path"], span)]
+
+
+def one_hop_external_surfaces(files, text, path, span):
+    """Direct surface plus at most one explicit typed caller hop."""
+    direct = [
+        {**item, "binding": "DIRECT_CHANGED_METHOD"}
+        for item in classify_method(text, path, span)]
+    type_names = _declared_callable_types(text)
+    upper = typed_method_callers(
+        files, type_names, span["name"], "ONE_TYPED_CALLER_HOP")
+    indirect = []
+    for caller in upper:
+        for item in _classify_caller(files, caller, "ONE_TYPED_CALLER_HOP"):
+            indirect.append({
+                **item,
+                "reason": (
+                    "Changed method has a one-hop typed caller on an external "
+                    "inbound surface; full call-chain proof is intentionally not required")})
+    unique = {}
+    for item in direct + indirect:
+        key = (item.get("binding"), item["external_kind"], item["path"],
+               item["line"], item["method"])
+        unique[key] = item
+    return list(unique.values())
+
+
+def mybatis_statements(text, path):
+    mapper = MAPPER.search(text)
+    namespace = (
+        dict(XML_ATTR.findall(mapper.group(1))).get("namespace", "")
+        if mapper else "")
+    result = []
+    for match in MYBATIS_STATEMENT.finditer(text):
+        attrs = dict(XML_ATTR.findall(match.group(2)))
+        if not attrs.get("id"):
+            continue
+        result.append({
+            "namespace": namespace,
+            "id": attrs["id"],
+            "operation": match.group(1).lower(),
+            "path": path,
+            "line": _line(text, match.start()),
+            "end_line": _line(text, max(match.start(), match.end() - 1))})
+    return result
+
+
+def mybatis_external_surfaces(files, statement):
+    """Bind Mapper XML to callers and inspect at most one upper typed hop."""
+    declaration = mapper_declaration(
+        files, statement["namespace"], statement["id"])
+    callers = mapper_callers(files, declaration)
+    result = []
+    for caller in callers:
+        result.extend(_classify_caller(
+            files, caller, "MYBATIS_DIRECT_CALLER_EXTERNAL"))
+        type_names = caller.get("caller_types") or []
+        method = caller.get("caller_method")
+        if not type_names or not method:
+            continue
+        for upper in typed_method_callers(
+                files, type_names, method, "MYBATIS_ONE_TYPED_CALLER_HOP"):
+            result.extend(_classify_caller(
+                files, upper, "MYBATIS_ONE_TYPED_CALLER_HOP"))
+    unique = {}
+    for item in result:
+        item = {
+            **item,
+            "reason": (
+                "Changed MyBatis statement is directly or one typed caller hop "
+                "from an external inbound surface")}
+        key = (item.get("binding"), item["external_kind"], item["path"],
+               item["line"], item["method"])
+        unique[key] = item
+    return list(unique.values())
+
+
 def _snapshot(entry, project, side, paths, cache_dir):
     sha = entry.get(side)
     if not sha:
