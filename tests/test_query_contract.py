@@ -23,6 +23,25 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(len(scan_references(vue, "Check.vue", "state")), 1)
         self.assertEqual(scan_references('sortName: "allState"', "Check.vue", "state"), [])
 
+    def test_nested_from_and_function_commas(self):
+        sql = ("SELECT (SELECT max(v) FROM inner_t) AS state, "
+               "concat(a, b) AS label, id FROM outer_t")
+        self.assertEqual(projection(sql), (["id", "label", "state"], []))
+
+    def test_non_projected_column_is_not_sql_failure_proof(self):
+        old, _ = projection("SELECT state, id FROM records")
+        new, gaps = projection("SELECT id FROM records ORDER BY state DESC")
+        self.assertEqual(set(old) - set(new), {"state"})
+        self.assertEqual(gaps, [])
+
+    def test_expression_without_alias_is_uncertain(self):
+        self.assertIn("WILDCARD_OR_COMPLEX_EXPRESSION",
+                      projection("SELECT CASE WHEN ok THEN 1 ELSE 0 END FROM t")[1])
+
+    def test_literal_pagehelper_sort(self):
+        code = 'PageHelper.startPage(page, 10, "state desc");'
+        self.assertEqual(len(scan_references(code, "Svc.java", "state")), 1)
+
     def test_dynamic_gap(self):
         xml = ('<mapper namespace="x"><select id="query">SELECT state, '
                '<if test="x">amount,</if> id FROM reco</select></mapper>')
