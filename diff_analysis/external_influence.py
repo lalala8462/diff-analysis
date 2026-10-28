@@ -160,6 +160,7 @@ def one_hop_external_surfaces(files, text, path, span):
         for item in _classify_caller(files, caller, "ONE_TYPED_CALLER_HOP"):
             indirect.append({
                 **item,
+                "priority": "MEDIUM",
                 "reason": (
                     "Changed method has a one-hop typed caller on an external "
                     "inbound surface; full call-chain proof is intentionally not required")})
@@ -206,8 +207,9 @@ def mybatis_external_surfaces(files, statement):
             continue
         for upper in typed_method_callers(
                 files, type_names, method, "MYBATIS_ONE_TYPED_CALLER_HOP"):
-            result.extend(_classify_caller(
-                files, upper, "MYBATIS_ONE_TYPED_CALLER_HOP"))
+            for item in _classify_caller(
+                    files, upper, "MYBATIS_ONE_TYPED_CALLER_HOP"):
+                result.append({**item, "priority": "MEDIUM"})
     unique = {}
     for item in result:
         item = {
