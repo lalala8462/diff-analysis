@@ -378,6 +378,9 @@ def write_html(root, release, specs, reviews, manifest=None):
                           item.get('project', ''), item.get('path', ''),
                           item.get('select_id', ''), item.get('deleted_column', '')))
     _write_json(root / 'query_contract_latest.json', query_contract)
+    external_result = sdk.get('external_influence', {})
+    external_candidates = external_result.get('candidates', [])
+    _write_json(root / 'external_influence_latest.json', external_result)
     shared_result = sdk.get('shared_resources', {})
     shared_impacts = shared_result.get('impacts', [])
     unified_resources = normalized_candidates(sdk)
@@ -404,7 +407,8 @@ def write_html(root, release, specs, reviews, manifest=None):
     for candidate in unified_resources['candidates']:
         key = (candidate['producer_project'], candidate['consumer_project'])
         resource_groups[key].append(candidate)
-    sdk['human_priority_count'] = len(alerts) + len(resource_groups) + len(query_candidates)
+    sdk['human_priority_count'] = (len(alerts) + len(resource_groups) +
+                                   len(query_candidates) + len(external_candidates))
     sdk['resource_group_count'] = len(resource_groups)
     sdk['resource_candidate_count'] = len(unified_resources['candidates'])
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
@@ -436,6 +440,12 @@ def write_html(root, release, specs, reviews, manifest=None):
         out.append('<p class="gap">查询结果列/排序契约扫描有 %d 处解析或绑定缺口；详情见 query_contract_latest.json。</p>' % len(query_gaps))
         for gap in query_gaps[:12]:
             out.append('<p class="gap">查询契约缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+
+    external_gaps = external_result.get('omissions', [])
+    if external_gaps:
+        out.append('<p class="gap">外部影响面扫描有 %d 处缺口；详情见 external_influence_latest.json。</p>' % len(external_gaps))
+        for gap in external_gaps[:10]:
+            out.append('<p class="gap">外部影响面缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
 
     out.append('<p class="gap">仅检查本次输入及列出的取证项目；默认分支不代表实际部署。间接依赖、外部父 POM、反射和动态调用可能未覆盖。</p>')
     out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
@@ -504,23 +514,38 @@ def write_html(root, release, specs, reviews, manifest=None):
                             esc(ref.get('path')), esc(ref.get('line')),
                             esc(ref.get('controller_class') or '未知Controller'),
                             esc(ref.get('controller_method') or '未知方法')))
-        if candidate.get('http_frontend_references'):
-            out.append('<p><b>HTTP 路径与排序字段同文件证据：</b></p>')
-            for ref in candidate['http_frontend_references']:
-                out.append('<p>%s @ %s / %s:%s　%s　<code>%s</code></p>' %
-                           (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
-                            esc(ref['line']), esc(ref.get('url')), esc(ref['evidence'])))
-        if candidate.get('frontend_references'):
-            out.append('<p><b>前端同名排序字段（补充证据，尚未绑定接口）：</b></p>')
-            for ref in candidate['frontend_references'][:10]:
-                out.append('<p>%s @ %s / %s:%s　<code>%s</code></p>' %
-                           (esc(ref['project']), esc(ref['sha']), esc(ref['path']),
-                            esc(ref['line']), esc(ref['evidence'])))
-        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；HIGH/MEDIUM/LOW 只表示静态绑定证据强弱。HTTP 同文件证据也不是完整前端数据流证明，仍需结合接口参数、数据库方言和运行时请求确认。</p>')
+        external_sort = candidate.get('external_sort_capability')
+        if external_sort:
+            out.append('<p><b>后端外部排序能力：</b>%s；HTTP 外部入口：%s；参数类型：%s</p>' %
+                       (esc(external_sort.get('status')),
+                        esc('是' if external_sort.get('http_exposed') else '未确认'),
+                        esc('、'.join(external_sort.get('parameter_types', [])) or '未解析')))
+            for item in candidate.get('sort_parameter_capabilities', []):
+                out.append('<p>排序参数类型 %s：可外部选择字段=%s，可外部选择方向=%s；%s</p>' %
+                           (esc(item.get('type')),
+                            esc('是' if item.get('externally_selectable_field') else '否'),
+                            esc('是' if item.get('externally_selectable_direction') else '否'),
+                            esc(item.get('path'))))
+                for ref in item.get('evidence', []):
+                    out.append('<p>%s:%s　%s　<code>%s</code></p>' %
+                               (esc(ref.get('path')), esc(ref.get('line')),
+                                esc(ref.get('kind')), esc(ref.get('evidence'))))
+        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；风险判断重点是后端是否允许外部参数动态控制排序，而不是是否能证明某个前端当前正在传该字段。HIGH/MEDIUM/LOW 仅表示静态证据强弱。</p>')
         out.append('</article>')
     if query_contract.get('omissions'):
         out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
                    len(query_contract['omissions']))
+    for candidate in external_candidates:
+        out.append('<article class="card alert"><b>外部影响面 [HIGH]：%s / %s</b>' %
+                   (esc(candidate.get('project')), esc(candidate.get('change_id'))))
+        out.append('<p>该最终差异直接落在可被外部触发的入口方法/服务面上，不要求先还原完整调用链。</p>')
+        for surface in candidate.get('surfaces', []):
+            out.append('<p><b>%s</b>　%s　%s:%s　%s　<code>%s</code></p>' %
+                       (esc(surface.get('external_kind')),
+                        esc('旧版入口' if surface.get('side') == 'base' else '新版入口'),
+                        esc(surface.get('path')), esc(surface.get('line')),
+                        esc(surface.get('reason')), esc(surface.get('evidence'))))
+        out.append('<p>差异证据：%s</p></article>' % _evidence_link(candidate.get('change_id')))
     panels = []
     for index, a in enumerate(alerts):
         if a['kind'] == '项目中的多工单交叉':
@@ -630,6 +655,14 @@ def write_html(root, release, specs, reviews, manifest=None):
                                                               ','.join(instance.get('reasons', [])))))
             out.append('<p>原始差异：%s</p>' %
                        ' '.join(_evidence_link(i) for i in candidate['change_ids']))
+            if candidate.get('external_influence'):
+                out.append('<p><b>外部影响面：</b>该资源变更对应的代码差异位于外部入口候选中：</p>')
+                for surface in candidate['external_influence']:
+                    out.append('<p>%s　%s:%s　%s.%s　%s</p>' %
+                               (esc(surface.get('external_kind')),
+                                esc(surface.get('path')), esc(surface.get('line')),
+                                esc(surface.get('method')), esc(surface.get('side')),
+                                esc(surface.get('reason'))))
             for title, uses in (('变化方源码', candidate['source_uses']),
                                 ('消费者源码', candidate['consumer_uses'])):
                 out.append('<details><summary>%s（%d 处）</summary>' % (title, len(uses)))
@@ -643,9 +676,9 @@ def write_html(root, release, specs, reviews, manifest=None):
                 out.append('</details>')
             out.append('<p>待核实：源码/调用绑定、生产部署与兼容性。</p></details>')
         out.append('</article>')
-    if not alerts and not resource_groups:
+    if not alerts and not resource_groups and not query_candidates and not external_candidates:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
-    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段，沿 Mapper→调用方→Controller/HTTP→前端排序线索追踪；字段删除或改名仍被固定/动态排序使用时列为待确认项，区分结果字段缺失与 SQL ORDER BY 合法性，并保留两侧 SHA、证据等级和解析缺口。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
+    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段；只要后端允许方法/请求参数动态控制 PageHelper/orderBy，即使未发现任何前端字面量，也把删除/改名字段列为风险候选，并区分结果字段缺失与 SQL ORDER BY 合法性。</li><li>外部影响面：不要求解析完整调用链；改动直接落在 HTTP、Dubbo、MQ、WebSocket 等外部入口时，作为独立风险证据，并附加到 SDK、数据库、Redis 等资源候选。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
     for project in sorted({l['project'] for l, _, _, _ in allfiles}): out.append('<option>' + esc(project) + '</option>')
     out.append('</select><select id="ticket" onchange="filter()"><option value="">全部工单</option>')
