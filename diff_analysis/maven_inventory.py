@@ -9,6 +9,7 @@ from .gitops import git, check_sha
 from .architecture_sources import default_projects, isolate_specs, source_name
 from .sdk_contracts import analyze_contract_uses
 from .database_inventory import analyze_table_impacts
+from .external_influence import analyze_external_influence
 from .query_contract import analyze_query_contracts
 from .shared_resources import analyze_shared_resources
 from .instance_identity import attach_instance_evidence
@@ -270,6 +271,9 @@ def analyze(specs, ledgers, manifest=None):
     query_contract = analyze_query_contracts(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'query_contract')
+    external_influence = analyze_external_influence(
+        entries, ledgers,
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'external_influence')
     shared = analyze_shared_resources(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'shared_resources')
@@ -284,7 +288,8 @@ def analyze(specs, ledgers, manifest=None):
     return {'sdks': sdks, 'alerts': alerts,
             'contract_changes': contract['changes'],
             'contract_impacts': contract['impacts'],
-            'database': database, 'query_contract': query_contract, 'shared_resources': shared,
+            'database': database, 'query_contract': query_contract,
+            'external_influence': external_influence, 'shared_resources': shared,
             'instance_scope': instance_scope,
             'gaps': sorted(set(gaps)),
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
