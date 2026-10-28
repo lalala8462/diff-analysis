@@ -81,9 +81,9 @@ def scan_references(text, path, column):
                       'evidence': text.splitlines()[line - 1].strip()[:250]})
     if Path(path).suffix.lower() == '.java':
         # Fixed default PageHelper order expressions, e.g. startPage(1, 10, "state desc").
-        for match in re.finditer(r'\\b(?:startPage|orderBy)\\s*\\([^;\\n]*?["\\x27]([A-Za-z_]\\w*)\\s+(?:asc|desc)["\\x27]', text, re.I):
+        for match in re.finditer(r'\b(?:startPage|orderBy)\s*\([^;\n]*?["\x27]([A-Za-z_]\w*)\s+(?:asc|desc)["\x27]', text, re.I):
             if match.group(1).lower() == column:
-                line = text.count('\\n', 0, match.start()) + 1
+                line = text.count('\n', 0, match.start()) + 1
                 found.append({'path': path, 'line': line,
                               'evidence': text.splitlines()[line - 1].strip()[:250]})
     return found
