@@ -631,53 +631,70 @@ def controller_endpoints(files, mapper_callers_list):
     return list(unique.values())
 
 
-def endpoint_frontend_references(snapshots, entries, endpoints, column):
-    """Bind exact endpoint literal and sort field only when both appear in one front-end file."""
-    result = []
-    urls = sorted(set(item.get('url') for item in endpoints if item.get('url') not in (None, '', '/')))
-    if not urls:
-        return result
-    for (project, side), sources in snapshots.items():
-        if side != 'head':
-            continue
-        for path, text in sources.items():
-            if Path(path).suffix.lower() not in {'.vue', '.js', '.jsx', '.ts', '.tsx'}:
-                continue
-            refs = scan_references(text, path, column)
-            if not refs:
-                continue
-            for url in urls:
-                literal = re.search(r'["\x27]' + re.escape(url) + r'["\x27]', text)
-                if not literal:
-                    continue
-                for ref in refs:
-                    result.append({
-                        'project': project,
-                        'sha': entries[project]['head'],
-                        'path': path,
-                        'line': ref['line'],
-                        'kind': ref['kind'],
-                        'url': url,
-                        'binding': 'HTTP_PATH_AND_SORT_FIELD_SAME_FILE',
-                        'evidence': ref['evidence']})
-    unique = {}
-    for item in result:
-        key = (item['project'], item['path'], item['line'], item['url'], item['kind'])
-        unique[key] = item
-    return list(unique.values())
-
-
-def _type_sort_sources(files, type_name, column):
+def _sort_parameter_capability(files, type_name):
+    """Describe whether a request/service parameter type can choose sort field/order."""
     if not type_name:
-        return []
-    result = []
+        return None
     for path, text in files.items():
         if not path.endswith('.java'):
             continue
         _, simple = _java_identity(text)
-        if simple == type_name:
-            result.extend(scan_references(text, path, column))
-    return result
+        if simple != type_name:
+            continue
+        has_sort_name = bool(re.search(
+            r'\b(?:String\s+sortName\b|getSortName\s*\(|setSortName\s*\()',
+            text))
+        has_sort_type = bool(re.search(
+            r'\b(?:String\s+sortType\b|getSortType\s*\(|setSortType\s*\()',
+            text))
+        get_order = re.search(r'\b(?:String\s+)?getOrderBy\s*\([^)]*\)\s*\{', text)
+        evidence = []
+        for pattern, kind in (
+                (r'\b(?:String\s+)?sortName\b', 'SORT_NAME_MEMBER'),
+                (r'\b(?:String\s+)?sortType\b', 'SORT_TYPE_MEMBER'),
+                (r'\bgetOrderBy\s*\(', 'GET_ORDER_BY_METHOD')):
+            match = re.search(pattern, text)
+            if match:
+                evidence.append({
+                    'path': path, 'line': _line(text, match.start()), 'kind': kind,
+                    'evidence': text.splitlines()[_line(text, match.start()) - 1].strip()[:250]})
+        return {
+            'type': type_name,
+            'path': path,
+            'has_sort_name': has_sort_name,
+            'has_sort_type': has_sort_type,
+            'has_get_order_by': bool(get_order),
+            'externally_selectable_field': bool(has_sort_name and get_order),
+            'externally_selectable_direction': bool(has_sort_type and get_order),
+            'evidence': evidence}
+    return None
+
+
+def _external_sort_capability(dynamic_refs, endpoints, capabilities):
+    """Risk is about backend capability, not proof that one frontend currently sends a field."""
+    parameter_refs = [
+        item for item in dynamic_refs
+        if item.get('receiver_source') == 'METHOD_PARAMETER']
+    selectable = [
+        item for item in capabilities
+        if item and item.get('externally_selectable_field')]
+    if parameter_refs and endpoints and selectable:
+        level = 'EXTERNAL_HTTP_DYNAMIC_SORT_CONFIRMED_STATIC'
+    elif parameter_refs and selectable:
+        level = 'METHOD_PARAMETER_DYNAMIC_SORT_CAPABILITY'
+    elif parameter_refs:
+        level = 'METHOD_PARAMETER_GET_ORDER_BY_UNRESOLVED_TYPE'
+    else:
+        return None
+    return {
+        'status': level,
+        'http_exposed': bool(endpoints),
+        'parameter_sort_refs': parameter_refs,
+        'parameter_types': sorted(set(
+            item.get('receiver_type') for item in parameter_refs
+            if item.get('receiver_type'))),
+        'sort_parameter_capabilities': selectable}
+
 
 
 def _change_ids(ledger, path, old_select, new_select):
@@ -782,7 +799,7 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         _column_change_assessment(
                             old_item, current.get('projection_items', [])))
                     bound_direct, bound_dynamic = [], []
-                    parameter_sources = []
+                    sort_capabilities = []
                     for caller in callers:
                         source = new.get(caller['path'], '')
                         direct, dynamic = caller_sort_evidence(
@@ -794,41 +811,27 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                             item['caller_method'] = caller.get('caller_method')
                             bound_dynamic.append(item)
                             if item.get('receiver_type'):
-                                parameter_sources.extend(_type_sort_sources(
-                                    new, item['receiver_type'], column))
+                                capability = _sort_parameter_capability(
+                                    new, item['receiver_type'])
+                                if capability and capability not in sort_capabilities:
+                                    sort_capabilities.append(capability)
 
                     project_refs = []
                     for source_path, source in new.items():
                         if Path(source_path).suffix.lower() in EXTS:
                             project_refs.extend(scan_references(source, source_path, column))
 
-                    frontend_refs = []
-                    http_frontend_refs = endpoint_frontend_references(
-                        snapshots, entries, endpoints, column)
-                    # Front-end evidence may live in a separately registered project.
-                    # It never upgrades binding strength without HTTP endpoint evidence.
-                    for (consumer, side), sources in snapshots.items():
-                        if side != 'head':
-                            continue
-                        for source_path, source in sources.items():
-                            if Path(source_path).suffix.lower() in {
-                                    '.vue', '.js', '.jsx', '.ts', '.tsx'}:
-                                frontend_refs.extend({
-                                    'project': consumer,
-                                    'sha': entries[consumer]['head'],
-                                    'binding': 'FRONTEND_FIELD_ONLY_UNBOUND',
-                                    **item}
-                                    for item in scan_references(
-                                        source, source_path, column))
+                    external_sort = _external_sort_capability(
+                        bound_dynamic, endpoints, sort_capabilities)
 
-                    if bound_direct:
+                    if external_sort and external_sort.get('http_exposed'):
+                        status = 'EXTERNAL_REQUEST_DYNAMIC_SORT_CAPABILITY'
+                        priority = 'HIGH'
+                    elif bound_direct:
                         status = 'BOUND_CALLER_LITERAL_SORT'
                         priority = 'HIGH'
-                    elif bound_dynamic and parameter_sources:
-                        status = 'BOUND_DYNAMIC_SORT_WITH_PARAMETER_SOURCE'
-                        priority = 'HIGH'
-                    elif bound_dynamic and http_frontend_refs:
-                        status = 'BOUND_HTTP_FRONTEND_DYNAMIC_SORT'
+                    elif external_sort:
+                        status = 'BACKEND_DYNAMIC_SORT_CAPABILITY'
                         priority = 'MEDIUM'
                     elif bound_dynamic:
                         status = 'BOUND_DYNAMIC_SORT_PARAMETER_UNRESOLVED'
@@ -840,8 +843,6 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         status = 'SAME_PROJECT_LEXICAL_REFERENCE'
                         priority = 'LOW'
                     else:
-                        # A projection removal with no surviving sort use is not a
-                        # query/sort contract alert.
                         continue
 
                     candidate = {
@@ -866,25 +867,22 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         'controller_endpoints': endpoints[:MAX_REFERENCES],
                         'bound_sort_references': bound_direct[:MAX_REFERENCES],
                         'dynamic_sort_references': bound_dynamic[:MAX_REFERENCES],
-                        'parameter_sort_sources': parameter_sources[:MAX_REFERENCES],
+                        'external_sort_capability': external_sort,
+                        'sort_parameter_capabilities': sort_capabilities,
                         'project_references': project_refs[:MAX_REFERENCES],
-                        'http_frontend_references': http_frontend_refs[:MAX_REFERENCES],
-                        'frontend_references': frontend_refs[:MAX_REFERENCES],
                         'priority': priority,
                         'status': status,
                         'limitation': (
-                            'SELECT projection removal does not prove ORDER BY invalid; '
-                            'front-end references are not endpoint-bound until HTTP/request '
-                            'propagation is verified.')}
+                            'SELECT projection removal does not prove ORDER BY invalid. '
+                            'Risk is raised when backend sorting can be controlled by '
+                            'method/request parameters; frontend path reconstruction is not required.')}
                     candidates.append(candidate)
 
                     for name, values in (
                             ('mapper_callers', callers),
                             ('controller_endpoints', endpoints),
-                            ('http_frontend_references', http_frontend_refs),
                             ('project_references', project_refs),
-                            ('frontend_references', frontend_refs),
-                            ('parameter_sort_sources', parameter_sources)):
+                            ('sort_parameter_capabilities', sort_capabilities)):
                         if len(values) > MAX_REFERENCES:
                             omissions.append({
                                 'project': project, 'path': path,
