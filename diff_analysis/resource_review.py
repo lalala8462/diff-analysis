@@ -116,13 +116,14 @@ def normalized_candidates(dependency_scope):
             continue
         current = merged[key]
         current["change_ids"] = sorted(set(current["change_ids"] + item["change_ids"]))
-        for field in ("source_uses", "consumer_uses"):
-            seen = {_hash(location) for location in current[field]}
-            for location in item[field]:
+        for field in ("source_uses", "consumer_uses", "external_influence"):
+            seen = {_hash(location) for location in current.get(field, [])}
+            for location in item.get(field, []):
                 signature = _hash(location)
                 if signature not in seen:
-                    current[field].append(location)
+                    current.setdefault(field, []).append(location)
                     seen.add(signature)
+        current["externally_influenced"] = bool(current.get("external_influence"))
         if current["status"] != item["status"]:
             current["status"] = "MULTIPLE_STATIC_CANDIDATES_UNCONFIRMED"
     return {"schema_version": "resource-impact-index-v1",
