@@ -242,19 +242,32 @@ def refresh_resource_review(run_dir, release, units=None, affected=None):
         recomputed += int(not unchanged)
         for entry in entries:
             resource = valid_facts[entry["candidate_id"]]
+            external = resource.get("external_influence", [])
+            prompt = "变更资源 %s（%s）是否被 %s 的固定版本用法依赖？" % (
+                resource["resource"], resource["kind"], resource["consumer_project"])
+            evidence_types = [
+                "DIFF", "RESOURCE_LOCATION", "CONSUMER_CODE", "INSTANCE_BINDING"]
+            limitation = "必须核实目标版本、资源身份/实例与实际兼容性；仅有源码名称不能确证"
+            if external:
+                kinds = sorted(set(
+                    item.get("external_kind") for item in external
+                    if item.get("external_kind")))
+                prompt += " 变化点同时存在外部影响面候选（%s），需额外确认外部输入是否可触发该变化路径。" % (
+                    "、".join(kinds) or "未知外部入口")
+                evidence_types.append("EXTERNAL_INFLUENCE")
+                limitation += "；外部入口证据为直接/一跳静态候选，不要求完整调用链，但也不代表运行时一定可达"
             question = _question(
                 "RESOURCE_CONSUMER", gid + ":" + resource["id"],
-                "变更资源 %s（%s）是否被 %s 的固定版本用法依赖？" %
-                (resource["resource"], resource["kind"], resource["consumer_project"]),
-                [gid], entry["source_change_ids"],
-                ["DIFF", "RESOURCE_LOCATION", "CONSUMER_CODE", "INSTANCE_BINDING"],
-                "必须核实目标版本、资源身份/实例与实际兼容性；仅有源码名称不能确证")
+                prompt, [gid], entry["source_change_ids"],
+                evidence_types, limitation)
             question.update({
                 "resource_candidate_id": resource["id"],
                 "resource_kind": resource["kind"],
                 "consumer_project": resource["consumer_project"],
                 "consumer_sha": resource["consumer_sha"],
-                "consumer_locations": resource["consumer_uses"][:30]})
+                "consumer_locations": resource["consumer_uses"][:30],
+                "externally_influenced": bool(external),
+                "external_influence": external[:20]})
             questions.append(question)
     outcome = {
         "schema_version": "resource-review-v1",
