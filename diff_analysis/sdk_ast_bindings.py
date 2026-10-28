@@ -6,6 +6,7 @@ An absent/incomplete classpath yields explicit omissions, not proof of no impact
 import hashlib
 import json
 import os
+import posixpath
 import re
 import subprocess
 import tempfile
@@ -138,8 +139,7 @@ def attributed_uses(sdk, consumer, entries, snapshots, contracts, cache_dir):
                      "detail": type(exc).__name__}]
     gaps.extend(idx.get("omissions", []))
     consumer_files = idx["files"]
-    prefixes = [p for p in (sdk.get("java_change_paths") or []) if p.endswith(".java")]
-    module = sdk["module"].rsplit("/", 1)[0]
+    module = posixpath.dirname(sdk["module"])
     module_prefix = module + "/" if module else ""
     for side in ("base", "head"):
         sha = sdk.get(side + "_sha")
