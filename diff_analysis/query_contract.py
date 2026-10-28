@@ -51,13 +51,11 @@ CLASS_REQUEST_MAPPING = re.compile(
     r'["\x27]([^"\x27]*)["\x27][^)]*\)', re.I)
 
 
-def projection(sql):
-    """Parse only a top-level SELECT list; uncertain expressions become gaps."""
-    sql = re.sub(r'/\*[\s\S]*?\*/|--[^\n]*', ' ', sql)
+def _top_level_from_offset(sql):
     start = re.search(r'\bselect\b', sql, re.I)
     if not start:
-        return [], ['UNRESOLVED_SELECT']
-    depth, quote, chunks, begin, i = 0, None, [], start.end(), start.end()
+        return None
+    depth, quote, i = 0, None, start.end()
     while i < len(sql):
         char = sql[i]
         if quote:
@@ -73,18 +71,42 @@ def projection(sql):
         elif char == ')':
             depth -= 1
             if depth < 0:
-                return [], ['UNBALANCED_PARENTHESES']
+                return None
         elif depth == 0 and sql[i:i + 4].lower() == 'from' and (
                 i == 0 or not (sql[i - 1].isalnum() or sql[i - 1] == '_')) and (
                 i + 4 == len(sql) or not (sql[i + 4].isalnum() or sql[i + 4] == '_')):
-            chunks.append(sql[begin:i].strip())
-            break
-        elif char == ',' and depth == 0:
-            chunks.append(sql[begin:i].strip())
-            begin = i + 1
+            return i
         i += 1
-    else:
+    return None
+
+
+def projection(sql):
+    """Parse only a top-level SELECT list; uncertain expressions become gaps."""
+    sql = re.sub(r'/\*[\s\S]*?\*/|--[^\n]*', ' ', sql)
+    start = re.search(r'\bselect\b', sql, re.I)
+    if not start:
+        return [], ['UNRESOLVED_SELECT']
+    end = _top_level_from_offset(sql)
+    if end is None:
         return [], ['TOP_LEVEL_FROM_NOT_FOUND']
+    raw = sql[start.end():end]
+    depth, quote, chunks, begin = 0, None, [], 0
+    for i, char in enumerate(raw):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in ('"', "'", chr(96)):
+            quote = char
+        elif char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth < 0:
+                return [], ['UNBALANCED_PARENTHESES']
+        elif char == ',' and depth == 0:
+            chunks.append(raw[begin:i].strip())
+            begin = i + 1
+    chunks.append(raw[begin:].strip())
     if depth or quote:
         return [], ['UNBALANCED_EXPRESSION']
     cols, gaps = [], []
@@ -110,9 +132,13 @@ def selects(text, path):
         if 'id' not in attrs:
             continue
         body = match.group(2)
-        cols, gaps = projection(re.sub(r'<[^>]*>', ' ', body))
-        if DYNAMIC_SQL.search(body):
-            gaps.append('DYNAMIC_SQL')
+        visible = re.sub(r'<[^>]*>', lambda item: ' ' * len(item.group()), body)
+        cols, gaps = projection(visible)
+        from_offset = _top_level_from_offset(visible)
+        if from_offset is None:
+            gaps.append('UNRESOLVED_SELECT_BOUNDARY')
+        elif any(item.start() < from_offset for item in DYNAMIC_SQL.finditer(body)):
+            gaps.append('DYNAMIC_SELECT_PROJECTION')
         result[(namespace, attrs['id'])] = {
             'path': path,
             'line': text.count('\n', 0, match.start()) + 1,
@@ -282,8 +308,13 @@ def _declared_callable_types(text):
         r'\b([^\{]*)\{', masked)
     if match:
         tail = match.group(1)
-        for clause in re.findall(r'\b(?:implements|extends)\s+([^\{]+)', tail):
-            for item in clause.split(','):
+        for keyword in ('extends', 'implements'):
+            clause = re.search(
+                r'\b' + keyword + r'\s+(.+?)(?=\bextends\b|\bimplements\b|$)',
+                tail)
+            if not clause:
+                continue
+            for item in clause.group(1).split(','):
                 name = re.sub(r'<.*', '', item).strip().split('.')[-1]
                 if re.fullmatch(r'[A-Za-z_]\w*', name):
                     result.append(name)
