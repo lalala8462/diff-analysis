@@ -44,6 +44,24 @@ class ExternalInfluenceTests(unittest.TestCase):
         self.assertTrue(any(
             item["external_kind"] == "DUBBO_RPC_SERVICE" for item in found))
 
+    def test_same_class_http_method_calls_changed_helper(self):
+        source = (
+            "class RecoController {\n"
+            "  @PostMapping(\"/query\")\n"
+            "  public void query(QueryParams params) { normalize(params); }\n"
+            "  private void normalize(QueryParams params) { params.trim(); }\n"
+            "}\n")
+        spans = {
+            span["name"]: span for span in java_method_spans(source)}
+        found = one_hop_external_surfaces(
+            {"RecoController.java": source}, source,
+            "RecoController.java", spans["normalize"])
+        self.assertTrue(any(
+            item["external_kind"] == "HTTP_ENDPOINT" and
+            item["binding"] == "ONE_LOCAL_CALLER_HOP" and
+            item["priority"] == "MEDIUM"
+            for item in found))
+
     def test_one_typed_service_hop_to_http_is_external_influence(self):
         service = (
             "class RecoService implements IRecoService {\n"
