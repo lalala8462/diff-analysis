@@ -62,7 +62,8 @@ EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次�
 | SDK 自身版本 | 识别为 API/SDK 模块的源码或 POM 变化，且两侧模块版本未变化或无法解析时，提示核对版本。模块命名与静态识别存在覆盖限制。 |
 | SDK 消费者版本 | 本次比较项目产出的 SDK 版本发生变化，消费者声明仍为旧版、与新版不一致或无法判断时，提示确认是否配套升级。只提供单一固定版本时无法判断升级过程。 |
 | SDK 契约使用候选 | 比较直接 Maven SDK 的 Java 字段、简单方法和枚举声明，查找消费者固定版本中有类型作用域线索的实际成员表达式；按消费者项目归组。仅 import 不触发重点，静态候选不证明不兼容。 |
-| 查询结果列与排序参数契约 | 对比 MyBatis `<select>` 旧新输出字段，并按 `namespace + select id → Mapper 接口方法 → Mapper 调用方方法 → PageHelper/getOrderBy` 建立静态绑定证据。字段删除/改名后仍存在固定或动态排序传播时重点提示；Vue/JS/TS 同名字段作为补充证据。输出缺列不等于 `ORDER BY` 必然报错，HTTP/前端接口尚未精确绑定时明确标注。 |
+| 查询结果列与排序参数契约 | 对比 MyBatis `<select>` 旧新输出字段。若受影响查询允许方法/HTTP 请求参数动态控制 `sortName/getOrderBy/PageHelper`，即使没有任何前端代码或旧字段字面量，也将删除/改名字段作为风险候选。输出缺列不等于 `ORDER BY` 必然报错。 |
+| 外部影响面 | 不要求还原完整调用链。最终差异直接落在 HTTP、Dubbo、MQ、WebSocket 等外部入口方法/服务面时，作为独立风险证据；同时附加到 SDK、数据库、Redis/共享资源等候选。未命中不代表一定不会被外部调用。 |
 | 跨项目数据库表候选 | 本次变化 SQL/DDL/显式表映射关联其他固定 SHA 的表访问位置；同名不等于同实例，实际部署须人工确认。 |
 | Redis、缓存 DTO 与反射候选 | 固定 SHA 下通过 Key/前缀、值类型线索及 Bean/反射名称关联消费者，均需人工核实绑定。 |
 | 统一资源候选及修订 | 为资源关联建立独立 R-* 编号并挂接 ReviewUnit，拆组仅重算归属和问题指纹，原始事实保留。 |
@@ -90,11 +91,19 @@ HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针�
 
 ## 查询字段与排序参数契约检查（首期静态候选）
 
-`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 的静态输出字段，对删除字段建立 `namespace + select id → Java Mapper 方法 → Mapper 调用方方法 → PageHelper/getOrderBy → 一次显式 Service 调用 → Spring Controller/HTTP 路径` 证据链；同时保留原始 SELECT 表达式，区分普通底层列删除、表达式/聚合别名删除以及同一表达式的别名改名，并分别提示 SQL `ORDER BY` 风险。还会解析排序参数类型中的固定字段来源并收集 Vue/JS/TS 排序字段。若前端固定 SHA 的同一文件同时出现已绑定 HTTP 路径和被删除排序字段，会记录更强的端到端静态证据。输出 `query_contract_latest.json` 并在 HTML “优先确认”及“程序关注的场景”展示，保留最终差异 D-*、双方 SHA、SQL 片段、Mapper/Service/Controller/前端位置和覆盖缺口。
+`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 输出字段，保留原始 SELECT 表达式并区分普通底层列删除、表达式/聚合别名删除以及同一表达式的别名改名。随后绑定 `namespace + select id → Mapper 方法 → Mapper 调用方法 → PageHelper/getOrderBy`。
 
-**证据等级：** `HIGH` 表示已绑定 Mapper 调用方法，并存在固定排序或可解析的动态排序参数来源；`MEDIUM` 表示已绑定 Mapper/调用方但动态参数来源仍不完整，或已形成 Mapper→Service→Controller/HTTP→前端同文件排序字段证据但尚未证明完整前端数据流；`LOW` 仅为同项目词法线索。等级只表示静态证据强弱，不代表已确认缺陷。
+这里的判断原则不是“能否证明某个前端当前正在传这个字段”，而是**后端是否允许外部输入控制排序字段**。只要排序对象来自方法参数，请求参数类型包含 `sortName` / `sortType` / `getOrderBy()`，并进入 PageHelper 或动态 orderBy，该查询的原有输出字段被删除或改名时就应进入风险候选。若还能静态确认对应 Spring Controller/HTTP 入口，证据等级进一步提高；不需要继续追踪 Vue/JS/TS、API 封装或完整前端调用链。
 
-**边界：** 当前支持一次显式类型调用向上追到 Spring Controller，并识别 `@RequestMapping`、`@GetMapping`、`@PostMapping`、`@PutMapping`、`@DeleteMapping`、`@PatchMapping` 的静态路径；前端只在“HTTP 路径与排序字段出现在同一文件”时形成更强关联。API 封装跨文件 import/调用、网关前缀、动态 URL、Feign/Dubbo 转发、多层 Service 链、完整请求 DTO 数据流仍未精确绑定。暂不支持完整动态 SQL、无法确定别名的复杂表达式和通配符。无法解析时保留 omissions，不直接报缺陷。SQL SELECT 未输出字段也不必然代表该字段无法用于 ORDER BY。
+**证据等级：** `HIGH` 表示已确认固定排序继续引用旧字段，或后端动态排序能力同时存在 HTTP 外部入口；`MEDIUM` 表示已确认方法参数可动态控制排序，但外部入口或参数类型信息仍不完整；`LOW` 仅为同项目旧字段排序字面量等较弱线索。等级只表示静态证据强弱，不代表已确认缺陷。
+
+**边界：** SELECT 未返回普通底层列时，部分数据库/查询结构仍可能允许按该列 `ORDER BY`；表达式/聚合别名删除或改名后继续按旧别名排序的风险通常更高。动态 SELECT 列、无法确定别名的复杂表达式和通配符保留 omissions，不直接下缺陷结论。
+
+## 外部影响面通用规则
+
+`external_influence.py` 对最终差异直接判断“改动点是否位于可被外部触发的入口面”，目前覆盖 Spring HTTP Mapping、Dubbo 服务、常见 MQ Listener 和 WebSocket/STOMP 入口。它**有意不要求完整调用链可解析**：直接命中外部入口就是风险证据；没有命中只表示静态入口证据不足，不能反推该改动一定不会被外部调用。
+
+这一外部影响面会写入 `external_influence_latest.json`，并挂接到统一资源候选中。因此 SDK、数据库、Redis/缓存/反射等检查除了原有“资源是否变化、是否有消费者”外，还会额外显示对应代码差异是否直接位于外部入口影响面。后续新增检查也应优先采用同一原则：**识别外部可控输入和外部入口，而不是把完整调用路径解析作为产生风险候选的前置条件。**
 
 ## 阶段 3：Redis / 反射 / Spring Bean（首期实现）
 
