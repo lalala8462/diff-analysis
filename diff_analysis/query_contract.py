@@ -34,7 +34,10 @@ JAVA_ORDER_LITERAL = re.compile(
 PAGEHELPER_LITERAL = re.compile(
     r'\b(?:startPage|orderBy)\s*\([^;\n]*?["\x27]([A-Za-z_]\w*)\s+'
     r'(?:asc|desc)["\x27]', re.I)
-GET_ORDER = re.compile(r'\b([A-Za-z_]\w*)\.getOrderBy\s*\(')
+GET_ORDER = re.compile(
+    r'\b([A-Za-z_]\w*)\.'
+    r'(getOrderBy|getSortName|getSortField|getOrderField|getSortColumn|getOrderColumn)'
+    r'\s*\(')
 PAGEHELPER_DYNAMIC = re.compile(
     r'\b(?:PageHelper\s*\.\s*)?(?:startPage|orderBy)\s*\([^;\n]*getOrderBy\s*\(',
     re.I)
@@ -532,7 +535,10 @@ def caller_sort_evidence(text, path, caller, column):
         receiver_type = parameters.get(receiver) or _variable_type(
             text, receiver, start, end)
         dynamic.append({
-            'path': path, 'line': line, 'kind': 'DYNAMIC_GET_ORDER_BY',
+            'path': path, 'line': line,
+            'kind': ('DYNAMIC_GET_ORDER_BY' if match.group(2) == 'getOrderBy'
+                     else 'DYNAMIC_SORT_FIELD_GETTER'),
+            'getter': match.group(2),
             'receiver': receiver,
             'receiver_type': receiver_type,
             'receiver_source': ('METHOD_PARAMETER'
@@ -550,10 +556,13 @@ def caller_sort_evidence(text, path, caller, column):
     for item in direct + dynamic:
         key = (item['path'], item['line'], item['kind'], item.get('receiver'))
         unique[key] = item
+    dynamic_kinds = (
+        'DYNAMIC_GET_ORDER_BY', 'DYNAMIC_SORT_FIELD_GETTER',
+        'PAGEHELPER_DYNAMIC_SORT')
     direct = [item for item in unique.values()
-              if item['kind'] not in ('DYNAMIC_GET_ORDER_BY', 'PAGEHELPER_DYNAMIC_SORT')]
+              if item['kind'] not in dynamic_kinds]
     dynamic = [item for item in unique.values()
-               if item['kind'] in ('DYNAMIC_GET_ORDER_BY', 'PAGEHELPER_DYNAMIC_SORT')]
+               if item['kind'] in dynamic_kinds]
     return direct, dynamic
 
 
@@ -641,17 +650,23 @@ def _sort_parameter_capability(files, type_name):
         _, simple = _java_identity(text)
         if simple != type_name:
             continue
-        has_sort_name = bool(re.search(
-            r'\b(?:String\s+sortName\b|getSortName\s*\(|setSortName\s*\()',
-            text))
+        field_pattern = (
+            r'\b(?:String\s+)?'
+            r'(sortName|sortField|orderField|sortColumn|orderColumn)\b')
+        has_sort_name = bool(re.search(field_pattern, text, re.I))
         has_sort_type = bool(re.search(
-            r'\b(?:String\s+sortType\b|getSortType\s*\(|setSortType\s*\()',
-            text))
-        get_order = re.search(r'\b(?:String\s+)?getOrderBy\s*\([^)]*\)\s*\{', text)
+            r'\b(?:String\s+)?(?:sortType|sortOrder|orderType|direction)\b',
+            text, re.I))
+        get_order = re.search(
+            r'\b(?:String\s+)?getOrderBy\s*\([^)]*\)\s*\{', text)
+        getter_control = re.search(
+            r'\bget(?:SortName|SortField|OrderField|SortColumn|OrderColumn)\s*\(',
+            text)
         evidence = []
         for pattern, kind in (
-                (r'\b(?:String\s+)?sortName\b', 'SORT_NAME_MEMBER'),
-                (r'\b(?:String\s+)?sortType\b', 'SORT_TYPE_MEMBER'),
+                (field_pattern, 'SORT_FIELD_MEMBER'),
+                (r'\b(?:String\s+)?(?:sortType|sortOrder|orderType|direction)\b',
+                 'SORT_DIRECTION_MEMBER'),
                 (r'\bgetOrderBy\s*\(', 'GET_ORDER_BY_METHOD')):
             match = re.search(pattern, text)
             if match:
@@ -664,8 +679,10 @@ def _sort_parameter_capability(files, type_name):
             'has_sort_name': has_sort_name,
             'has_sort_type': has_sort_type,
             'has_get_order_by': bool(get_order),
-            'externally_selectable_field': bool(has_sort_name and get_order),
-            'externally_selectable_direction': bool(has_sort_type and get_order),
+            'externally_selectable_field': bool(
+                has_sort_name and (get_order or getter_control)),
+            'externally_selectable_direction': bool(
+                has_sort_type and (get_order or getter_control)),
             'evidence': evidence}
     return None
 
