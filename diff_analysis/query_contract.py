@@ -1,10 +1,10 @@
 """Read-only fixed-SHA query-result/sorting contract analysis.
 
 The scanner is deliberately conservative:
-MyBatis namespace+select id is first bound to a Java Mapper declaration, then
-Mapper calls and sorting propagation in the same Java caller method are used
-to strengthen a candidate. Front-end matches remain supplemental evidence
-until an HTTP endpoint/request binding is proved.
+MyBatis namespace+select id is first bound to a Java Mapper declaration. Risk
+is raised when the backend can accept externally controlled sort fields and
+propagate them into PageHelper/orderBy for the affected query. Front-end code
+is not required for this decision.
 """
 import re
 from pathlib import Path
@@ -13,8 +13,8 @@ from .gitops import git
 from .source_index import source_snapshot_index
 
 
-VERSION = "query-contract-v3"
-EXTS = {".xml", ".java", ".vue", ".js", ".jsx", ".ts", ".tsx"}
+VERSION = "query-contract-v4"
+EXTS = {".xml", ".java"}
 MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
 MAX_REFERENCES = 30
@@ -34,10 +34,6 @@ JAVA_ORDER_LITERAL = re.compile(
 PAGEHELPER_LITERAL = re.compile(
     r'\b(?:startPage|orderBy)\s*\([^;\n]*?["\x27]([A-Za-z_]\w*)\s+'
     r'(?:asc|desc)["\x27]', re.I)
-FRONT_SORT = re.compile(
-    r'\b(?:sortName|sortBy|orderBy|prop)\b\s*(?:=|:)\s*["\x27]([A-Za-z_]\w*)["\x27]'
-    r'|\b(?:sort-name|sort-by|order-by|prop)\s*=\s*["\x27]([A-Za-z_]\w*)["\x27]',
-    re.I)
 GET_ORDER = re.compile(r'\b([A-Za-z_]\w*)\.getOrderBy\s*\(')
 PAGEHELPER_DYNAMIC = re.compile(
     r'\b(?:PageHelper\s*\.\s*)?(?:startPage|orderBy)\s*\([^;\n]*getOrderBy\s*\(',
@@ -238,8 +234,6 @@ def scan_references(text, path, column):
         patterns = [(JAVA_FIELD_SORT, 'JAVA_SORT_LITERAL'),
                     (JAVA_ORDER_LITERAL, 'JAVA_SQL_ORDER_LITERAL'),
                     (PAGEHELPER_LITERAL, 'PAGEHELPER_LITERAL_SORT')]
-    elif suffix in {'.vue', '.js', '.jsx', '.ts', '.tsx'}:
-        patterns = [(FRONT_SORT, 'FRONTEND_SORT_FIELD')]
     for pattern, kind in patterns:
         for match in pattern.finditer(text):
             value = next((group for group in match.groups() if group), '')
