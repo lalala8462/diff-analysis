@@ -13,7 +13,7 @@ from .gitops import git
 from .source_index import source_snapshot_index
 
 
-VERSION = "query-contract-v4"
+VERSION = "query-contract-v5"
 EXTS = {".xml", ".java"}
 MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
@@ -153,7 +153,8 @@ def projection_details(sql):
         implicit_expression = re.fullmatch(
             r'(.+(?:\)|\bEND|[\x27"]|\d))\s+([A-Za-z_]\w*)',
             part, re.I)
-        if implicit_expression:
+        # CASE 的结束关键字不能作为未加引号的隐式别名。
+        if implicit_expression and implicit_expression.group(2).upper() != 'END':
             items.append({'output': implicit_expression.group(2).lower(),
                           'expression': implicit_expression.group(1).strip(),
                           'kind': 'EXPRESSION_ALIAS'})
@@ -722,6 +723,24 @@ def _external_sort_capability(dynamic_refs, endpoints, capabilities):
         'sort_parameter_capabilities': selectable}
 
 
+def sort_input_influence(dynamic_refs, direct_refs=()):
+    """以当前查询调用点为边界区分上层参数、内部固定排序和来源未明。"""
+    parameters = [item for item in dynamic_refs
+                  if item.get('receiver_source') == 'METHOD_PARAMETER']
+    if parameters:
+        return {'level': 'HIGH', 'status': 'CALLER_PARAMETER_CONTROLS_SORT',
+                'reason': '上层调用传入的排序参数进入当前查询，可能继续传入已删除或改名的字段。',
+                'parameters': sorted({item.get('receiver') for item in parameters if item.get('receiver')}),
+                'evidence': parameters}
+    if direct_refs and not dynamic_refs:
+        return {'level': 'LOW', 'status': 'INTERNAL_LITERAL_SORT',
+                'reason': '已绑定的排序线索为当前调用内的固定字面量；旧字段引用仍需检查。',
+                'parameters': [], 'evidence': list(direct_refs)}
+    return {'level': 'MEDIUM', 'status': 'SORT_INPUT_SOURCE_UNRESOLVED',
+            'reason': '尚未确定排序值是否由上层参数控制，不能据此认定仅在内部生效。',
+            'parameters': [], 'evidence': list(dynamic_refs)}
+
+
 
 def _change_ids(ledger, path, old_select, new_select):
     result = []
@@ -871,6 +890,7 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                     else:
                         continue
 
+                    input_influence = sort_input_influence(bound_dynamic, bound_direct)
                     candidate = {
                         'kind': 'QUERY_RESULT_SORT_CONTRACT_CANDIDATE',
                         'project': project,
@@ -894,9 +914,11 @@ def analyze_query_contracts(entries, ledgers, cache_dir):
                         'bound_sort_references': bound_direct[:MAX_REFERENCES],
                         'dynamic_sort_references': bound_dynamic[:MAX_REFERENCES],
                         'external_sort_capability': external_sort,
+                        'input_influence': input_influence,
                         'sort_parameter_capabilities': sort_capabilities,
                         'project_references': project_refs[:MAX_REFERENCES],
-                        'priority': priority,
+                        'evidence_level': priority,
+                        'priority': input_influence['level'],
                         'status': status,
                         'limitation': (
                             'SELECT projection removal does not prove ORDER BY invalid. '

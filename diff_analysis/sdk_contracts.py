@@ -136,7 +136,8 @@ def declarations(source, path):
     method_counts = defaultdict(int)
     for match in METHOD.finditer(code):
         ret, name, args = match.groups()
-        if ret.strip().split()[0] in ("return", "throw", "new", "if", "while", "for", "switch", "private"):
+        return_tokens = ret.strip().split()
+        if not return_tokens or return_tokens[0] in ("return", "throw", "new", "if", "while", "for", "switch", "private"):
             continue
         if name == cls:
             continue

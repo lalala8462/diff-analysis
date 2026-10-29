@@ -79,7 +79,11 @@ def normalized_candidates(dependency_scope):
             "instance_evidence": row.get("instance_evidence"),
             "status": row["status"]})
     external_by_change = defaultdict(list)
+    inputs_by_change = defaultdict(list)
     for row in dependency_scope.get("external_influence", {}).get("candidates", []):
+        if row.get('input_influence'):
+            inputs_by_change[row['change_id']].append({
+                'change_id': row['change_id'], **row['input_influence']})
         for surface in row.get("surfaces", []):
             external_by_change[row["change_id"]].append({
                 "external_kind": surface.get("external_kind"),
@@ -102,7 +106,14 @@ def normalized_candidates(dependency_scope):
                     external.append(surface)
                     seen.add(signature)
         item["external_influence"] = external
-        item["externally_influenced"] = bool(external)
+        item['input_influence'] = [influence for cid in item.get('change_ids', [])
+                                   for influence in inputs_by_change.get(cid, [])]
+        item['input_influence_level'] = min(
+            (influence['level'] for influence in item['input_influence']),
+            key=lambda level: {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}.get(level, 1),
+            default='MEDIUM')
+        item["externally_influenced"] = item['input_influence_level'] == 'HIGH'
+        item['has_external_surface'] = bool(external)
         item["id"] = "R-" + _hash([
             item["kind"], item["producer_project"], item["consumer_project"],
             item["resource"], item["producer_base_sha"],
@@ -118,26 +129,31 @@ def normalized_candidates(dependency_scope):
             continue
         current = merged[key]
         current["change_ids"] = sorted(set(current["change_ids"] + item["change_ids"]))
-        for field in ("source_uses", "consumer_uses", "external_influence"):
+        for field in ("source_uses", "consumer_uses", "external_influence", 'input_influence'):
             seen = {_hash(location) for location in current.get(field, [])}
             for location in item.get(field, []):
                 signature = _hash(location)
                 if signature not in seen:
                     current.setdefault(field, []).append(location)
                     seen.add(signature)
-        current["externally_influenced"] = bool(current.get("external_influence"))
+        current['input_influence_level'] = min(
+            (influence['level'] for influence in current['input_influence']),
+            key=lambda level: {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}.get(level, 1),
+            default='MEDIUM')
+        current['externally_influenced'] = current['input_influence_level'] == 'HIGH'
+        current['has_external_surface'] = bool(current.get('external_influence'))
         if current["status"] != item["status"]:
             current["status"] = "MULTIPLE_STATIC_CANDIDATES_UNCONFIRMED"
-    return {"schema_version": "resource-impact-index-v1",
+    return {"schema_version": "resource-impact-index-v2",
             "candidates": sorted(merged.values(), key=lambda x: x["id"]),
             "coverage_gaps": (
                 dependency_scope.get("database", {}).get("omissions", []) +
                 dependency_scope.get("shared_resources", {}).get("omissions", []) +
                 dependency_scope.get("external_influence", {}).get("omissions", [])),
             "limitation": (
-                "Static project/resource/name candidates. External influence is a "
-                "direct inbound-surface signal, not whole-program reachability or "
-                "verified runtime binding.")}
+                "Static project/resource/name candidates. Input influence is based on "
+                "parameter use at the changed expression; external surfaces are separate "
+                "evidence and do not prove runtime binding.")}
 
 
 def _intersect(a, b):
@@ -175,7 +191,7 @@ def refresh_resource_review(run_dir, release, units=None, affected=None):
     if not filename.is_file():
         return {"available": False, "reason": "RESOURCE_FACTS_NOT_YET_EXPORTED"}
     raw = json.loads(filename.read_text("utf-8"))
-    if raw.get("schema_version") != "resource-impact-index-v1":
+    if raw.get("schema_version") not in ('resource-impact-index-v1', 'resource-impact-index-v2'):
         raise ValueError("Unsupported resource impact version")
     state = _state(root)
     current_revision = (state["group_revisions"][-1]["revision"]
@@ -245,11 +261,15 @@ def refresh_resource_review(run_dir, release, units=None, affected=None):
         for entry in entries:
             resource = valid_facts[entry["candidate_id"]]
             external = resource.get("external_influence", [])
+            input_level = resource.get('input_influence_level', 'MEDIUM')
             prompt = "变更资源 %s（%s）是否被 %s 的固定版本用法依赖？" % (
                 resource["resource"], resource["kind"], resource["consumer_project"])
             evidence_types = [
                 "DIFF", "RESOURCE_LOCATION", "CONSUMER_CODE", "INSTANCE_BINDING"]
             limitation = "必须核实目标版本、资源身份/实例与实际兼容性；仅有源码名称不能确证"
+            if input_level == 'HIGH':
+                prompt += ' 上层传入参数可影响本次改动，需验证允许值及边界输入。'
+                evidence_types.append('INPUT_INFLUENCE')
             if external:
                 kinds = sorted(set(
                     item.get("external_kind") for item in external
@@ -268,7 +288,9 @@ def refresh_resource_review(run_dir, release, units=None, affected=None):
                 "consumer_project": resource["consumer_project"],
                 "consumer_sha": resource["consumer_sha"],
                 "consumer_locations": resource["consumer_uses"][:30],
-                "externally_influenced": bool(external),
+                "externally_influenced": input_level == 'HIGH',
+                'input_influence_level': input_level,
+                'input_influence': resource.get('input_influence', []),
                 "external_influence": external[:20]})
             questions.append(question)
     outcome = {

@@ -11,10 +11,10 @@ from .gitops import git
 from .source_index import source_snapshot_index
 from .query_contract import (
     java_method_spans, mapper_callers, mapper_declaration, typed_method_callers,
-    _declared_callable_types, _line)
+    _declared_callable_types, _line, _mask_java, _brace_end, _paren_end)
 
 
-VERSION = "external-influence-v2"
+VERSION = "external-influence-v3"
 MAX_FILES = 4000
 MAX_FILE_BYTES = 500000
 
@@ -37,6 +37,136 @@ XML_ATTR = re.compile(r'\b(id|namespace)\s*=\s*["\x27]([^"\x27]+)', re.I)
 MYBATIS_STATEMENT = re.compile(
     r'<(select|insert|update|delete)\b([^>]*)>(.*?)</\1\s*>',
     re.I | re.S)
+
+
+def method_input_influence(text, path, span, change_range):
+    """只按改动表达式、简单局部赋值和包围条件判断参数影响，不推断完整数据流。"""
+    masked = _mask_java(text)
+    opening = masked.find('{', span['start'], span['end'])
+    start = int((change_range or {}).get('start') or 0)
+    count = int((change_range or {}).get('count') or 0)
+    lines = text.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+    begin = max(opening + 1, offsets[min(max(start - 1, 0), len(lines))])
+    end = min(span['end'] - 1, offsets[min(max(start + count - 1, 0), len(lines))])
+    parameters = span.get('parameters') or {}
+    sources = {name: {name} for name in parameters}
+    constants, controls, evidence, roots, effects, propagation = set(), [], [], set(), set(), []
+    unknown, seen = begin >= end, False
+
+    def dependencies(expression):
+        expression = re.sub(r'\s*\.\s*', '.', expression)
+        return set().union(*(sources.get(name, set()) for name in
+                             re.findall(r'(?<![.\w])[A-Za-z_]\w*', expression)))
+
+    def constant_expression(expression):
+        # 字面量和此前确认的局部确定值可以判低，成员读取和调用仍保留未知。
+        literal = bool(re.search(r'["\x27]', expression))
+        expression = _mask_java(expression).strip()
+        names = set(re.findall(r'\b[A-Za-z_]\w*\b', expression))
+        return (not re.search(r'[A-Za-z_]\w*\s*\(|\bnew\b|\.', expression)
+                and names <= constants | {'true', 'false', 'null'}
+                and bool(expression or literal))
+
+    body = masked[opening + 1:span['end'] - 1]
+    for match in re.finditer(r'[^;{}]+[;{}]', body):
+        fragment = match.group()
+        offset = opening + 1 + match.start()
+        finish = opening + 1 + match.end()
+        assignment = re.search(r'(?<![.\w])([A-Za-z_]\w*)\s*=(?!=)\s*(.*?)\s*[;{}]$', fragment, re.S)
+        expression = assignment.group(2) if assignment else fragment
+        raw_expression = (text[offset + fragment.find('=', assignment.end(1)) + 1:finish - 1]
+                          if assignment else expression)
+        dep = dependencies(expression)
+        control = re.search(r'\b(if|while|for|switch)\s*\(', fragment)
+        if control:
+            paren = offset + control.end() - 1
+            close = _paren_end(masked, paren)
+            if close is not None:
+                condition = dependencies(masked[paren + 1:close])
+                after = close + 1
+                while after < span['end'] and masked[after].isspace():
+                    after += 1
+                control_end = (_brace_end(masked, after) if masked[after:after + 1] == '{'
+                               else masked.find(';', after) + 1)
+                if control.group(1) == 'if' and control_end:
+                    for _ in range(20):
+                        tail = re.match(r'\s*else\b\s*', masked[control_end:span['end']])
+                        if not tail:
+                            break
+                        branch = control_end + tail.end()
+                        nested = re.match(r'if\s*\(', masked[branch:span['end']])
+                        if nested:
+                            close_branch = _paren_end(masked, branch + nested.end() - 1)
+                            if close_branch is None:
+                                unknown = True
+                                break
+                            branch = close_branch + 1
+                            while branch < span['end'] and masked[branch].isspace():
+                                branch += 1
+                        next_end = (_brace_end(masked, branch) if masked[branch:branch + 1] == '{'
+                                    else masked.find(';', branch, span['end']) + 1)
+                        if not next_end:
+                            unknown = True
+                            break
+                        control_end = next_end
+                if control_end:
+                    controls.append((after, control_end, condition,
+                                     not condition and not constant_expression(text[paren + 1:close])))
+                    if condition and offset < end:
+                        propagation.append({'path': path, 'line': _line(text, paren),
+                                            'parameters': sorted(condition), 'kind': 'CONTROL_CONDITION',
+                                            'evidence': text[paren + 1:close].strip()[:300]})
+                elif condition:
+                    unknown = True
+        active_controls = []
+        for left, right, condition, unresolved in controls:
+            if left <= offset < right:
+                dep.update(condition)
+                active_controls.append(unresolved)
+        if offset < end and finish > begin and masked[max(offset, begin):min(finish, end)].strip():
+            seen = True
+            if dep:
+                roots.update(dep)
+                effect = ('返回值' if re.search(r'\breturn\b', fragment) else
+                          '条件分支' if control else '赋值结果' if assignment else '下游调用参数')
+                effects.add(effect)
+                evidence.append({'path': path, 'line': _line(text, max(offset, begin)),
+                                 'method': span['name'], 'parameters': sorted(dep),
+                                 'effect': effect,
+                                 'evidence': text[max(offset, begin):min(finish, end)].strip()[:300]})
+            else:
+                returned = re.fullmatch(r'\s*return\s+(.*?)\s*;\s*', fragment, re.S)
+                if any(active_controls) or not ((assignment and constant_expression(raw_expression)) or
+                        (returned and constant_expression(text[offset + fragment.find('return') + 6:
+                                                              offset + fragment.rfind(';')]))):
+                    unknown = True
+        if assignment:
+            target = assignment.group(1)
+            sources[target] = sources.get(target, set()) | dep if active_controls else dep
+            if dep and offset < end:
+                propagation.append({'path': path, 'line': _line(text, offset),
+                                    'parameters': sorted(dep), 'kind': 'LOCAL_ASSIGNMENT',
+                                    'evidence': text[offset:finish].strip()[:300]})
+            if not dep and not any(active_controls) and constant_expression(raw_expression):
+                constants.add(target)
+            else:
+                constants.discard(target)
+    unknown = unknown or not seen
+    level = 'HIGH' if roots else 'MEDIUM' if unknown else 'LOW'
+    evidence = [item for item in propagation if roots.intersection(item['parameters'])] + evidence
+    return {
+        'level': level,
+        'status': ('CALLER_PARAMETER_REACHES_CHANGE' if roots else
+                   'INPUT_SOURCE_UNRESOLVED' if unknown else 'INTERNAL_DETERMINISTIC_EXPRESSION'),
+        'reason': ('上层调用传入的参数影响本次改动的表达式或包围分支。' if roots else
+                   '尚不能确定本次改动值的来源或传播范围。' if unknown else
+                   '本次改动表达式只使用字面量或已确认的内部确定值。'),
+        'parameters': sorted(roots), 'effects': sorted(effects), 'method': span['name'], 'path': path,
+        'evidence': evidence[:30], 'omitted_evidence_count': max(0, len(evidence) - 30),
+        'limitation': '仅覆盖显式参数引用、简单赋值和带花括号的控制条件；不代表完整类型绑定或跨方法数据流。'}
 
 def _overlap(change_range, start, end):
     begin = int((change_range or {}).get("start") or 0)
@@ -268,7 +398,7 @@ def _snapshot(entry, project, side, paths, cache_dir, include_all_java=False):
     return files, omissions
 
 
-def analyze_external_influence(entries, ledgers, cache_dir):
+def analyze_external_influence(entries, ledgers, cache_dir, query_contract=None):
     """Annotate final diffs using direct or one-hop inbound external surfaces."""
     candidates, omissions = [], []
     for ledger in ledgers:
@@ -299,7 +429,7 @@ def analyze_external_influence(entries, ledgers, cache_dir):
             continue
 
         for change in ledger.get("final_changes", []):
-            observations = []
+            observations, influences = [], []
             for side, path, source, rng in (
                     ("base", change.get("old_path"), base,
                      change.get("old_range")),
@@ -309,12 +439,15 @@ def analyze_external_influence(entries, ledgers, cache_dir):
                 if not text:
                     continue
                 if path.endswith(".java"):
+                    if '/src/test/' in '/' + path:
+                        continue
                     for span in java_method_spans(text):
                         start_line = _line(text, span["start"])
                         end_line = _line(
                             text, max(span["start"], span["end"] - 1))
                         if not _overlap(rng, start_line, end_line):
                             continue
+                        influences.append({'side': side, **method_input_influence(text, path, span, rng)})
                         for item in one_hop_external_surfaces(
                                 source, text, path, span):
                             observations.append({"side": side, **item})
@@ -342,21 +475,33 @@ def analyze_external_influence(entries, ledgers, cache_dir):
                     item["external_kind"], item["path"],
                     item["line"], item["method"])
                 unique[key] = item
-            if not unique:
+            for query in (query_contract or {}).get('candidates', []):
+                if query.get('project') == project and change['id'] in query.get('change_ids', []):
+                    influence = query.get('input_influence')
+                    if influence:
+                        influences.append({'side': 'head', **influence})
+            if not unique and not influences:
                 continue
             surfaces = sorted(
                 unique.values(),
                 key=lambda item: (
                     item["side"], item.get("binding", ""),
                     item["external_kind"], item["path"], item["line"]))
-            high_bindings = {
-                "DIRECT_CHANGED_METHOD",
-                "MYBATIS_DIRECT_CALLER_EXTERNAL"}
-            priority = (
-                "HIGH" if any(
-                    item.get("binding") in high_bindings
-                    for item in surfaces)
-                else "MEDIUM")
+            current = [item for item in influences if item.get('side') == 'head'] or influences
+            influence = min(current, key=lambda item: {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}.get(item['level'], 1)) if current else {
+                'level': 'MEDIUM', 'status': 'INPUT_SOURCE_UNRESOLVED',
+                'reason': '已找到外部入口，但尚未绑定入口参数与本次改动表达式。',
+                'parameters': [], 'evidence': []}
+            priority = influence['level']
+            relevant = [item for item in current if item['level'] == priority]
+            methods = sorted({item['method'] for item in relevant if item.get('method')})
+            input_summary = {**influence,
+                             'parameters': sorted({name for item in relevant for name in item.get('parameters', [])}),
+                             'effects': sorted({effect for item in relevant for effect in item.get('effects', [])}),
+                             'evidence': [ref for item in relevant for ref in item.get('evidence', [])],
+                             'method_assessments': influences}
+            if methods:
+                input_summary.update({'methods': methods, 'method': '、'.join(methods)})
             candidates.append({
                 "project": project,
                 "change_id": change["id"],
@@ -366,6 +511,8 @@ def analyze_external_influence(entries, ledgers, cache_dir):
                 "head_sha": ledger["head"],
                 "surfaces": surfaces,
                 "priority": priority,
+                'input_influence': input_summary,
+                'requires_confirmation': priority == 'HIGH' or (priority == 'MEDIUM' and bool(surfaces)),
                 "status": "EXTERNAL_INFLUENCE_CANDIDATE"})
 
     return {

@@ -219,8 +219,8 @@ def analyze(specs, ledgers, manifest=None):
             if not sdk['group'] or not sdk['artifact']:
                 gaps.append(project + ' / ' + module['path'] + '：SDK 坐标不完整，无法匹配消费者')
                 continue
-            if not sdk['old_version'] or not sdk['new_version'] or sdk['old_version'] == sdk['new_version']:
-                alerts.append({'kind': 'SDK自身版本', 'reason': 'SDK 源码或 POM 发生变化，但模块版本未变化或无法解析。', 'sdk': sdk})
+            if sdk['old_version'] and sdk['new_version'] and sdk['old_version'] == sdk['new_version']:
+                alerts.append({'kind': 'SDK自身版本', 'reason': 'SDK 源码或 POM 发生变化而版本未变，消费者可能无法通过版本区分本次发布；需核对实际契约变化和发布安排。', 'sdk': sdk})
             version_changed = bool(sdk['old_version'] and sdk['new_version'] and sdk['old_version'] != sdk['new_version'])
             if not sdk['old_version'] or not sdk['new_version']:
                 gaps.append(project + ' / ' + module['path'] + '：本次 SDK 版本变化无法确定，未进行消费者版本对照')
@@ -273,7 +273,8 @@ def analyze(specs, ledgers, manifest=None):
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'query_contract')
     external_influence = analyze_external_influence(
         entries, ledgers,
-        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'external_influence')
+        Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'external_influence',
+        query_contract=query_contract)
     shared = analyze_shared_resources(
         entries, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'shared_resources')

@@ -4,10 +4,18 @@ from diff_analysis.query_contract import (
     _column_change_assessment, _external_sort_capability,
     _sort_parameter_capability, caller_sort_evidence, controller_endpoints,
     mapper_callers, mapper_declaration, projection, projection_details,
-    scan_references, selects)
+    scan_references, selects, sort_input_influence)
 
 
 class QueryContractTests(unittest.TestCase):
+    def test_sort_input_influence_uses_current_call_boundary(self):
+        dynamic = [{'receiver_source': 'METHOD_PARAMETER', 'receiver': 'reqVo'}]
+        self.assertEqual('HIGH', sort_input_influence(dynamic)['level'])
+        self.assertEqual(['reqVo'], sort_input_influence(dynamic)['parameters'])
+        self.assertEqual('LOW', sort_input_influence([], [{'evidence': 'state asc'}])['level'])
+        self.assertEqual('MEDIUM', sort_input_influence([{'receiver_source': 'LOCAL_VARIABLE'}])['level'])
+        self.assertEqual('MEDIUM', sort_input_influence([])['level'])
+
     def test_columns(self):
         cols, gaps = projection("SELECT id, state, SUM(total) AS amount FROM reco_record")
         self.assertEqual(cols, ["amount", "id", "state"])
@@ -37,8 +45,27 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(gaps, [])
 
     def test_expression_without_alias_is_uncertain(self):
-        self.assertIn("WILDCARD_OR_COMPLEX_EXPRESSION",
-                      projection("SELECT CASE WHEN ok THEN 1 ELSE 0 END FROM t")[1])
+        expressions = [
+            "CASE WHEN ok THEN 1 ELSE 0 END",
+            "CASE WHEN ok THEN 1 END",
+            "case when ok then 'yes' else 'no' end",
+            "CASE WHEN ok THEN coalesce(value, 0) ELSE 0 END",
+            "CASE WHEN ok THEN CASE WHEN ready THEN 1 ELSE 0 END ELSE 0 END"]
+        for expression in expressions:
+            with self.subTest(expression=expression):
+                columns, gaps = projection('SELECT id, ' + expression + ' FROM t')
+                self.assertEqual(['id'], columns)
+                self.assertIn('WILDCARD_OR_COMPLEX_EXPRESSION', gaps)
+
+    def test_case_expression_with_alias_keeps_output_and_expression(self):
+        expression = 'CASE WHEN ok THEN 1 ELSE 0 END'
+        for alias in ['score', 'AS score', 'AS `end`']:
+            with self.subTest(alias=alias):
+                items, gaps = projection_details('SELECT ' + expression + ' ' + alias + ' FROM t')
+                self.assertEqual([], gaps)
+                self.assertEqual(expression, items[0]['expression'])
+                self.assertEqual('end' if '`end`' in alias else 'score', items[0]['output'])
+                self.assertEqual('EXPRESSION_ALIAS', items[0]['kind'])
 
     def test_literal_pagehelper_sort(self):
         code = 'PageHelper.startPage(page, 10, "state desc");'

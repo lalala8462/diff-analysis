@@ -42,10 +42,17 @@ class ResourceExternalInfluenceTests(unittest.TestCase):
         result = normalized_candidates(scope)
         self.assertEqual(len(result["candidates"]), 1)
         candidate = result["candidates"][0]
-        self.assertTrue(candidate["externally_influenced"])
+        self.assertFalse(candidate["externally_influenced"])
+        self.assertTrue(candidate['has_external_surface'])
+        self.assertEqual('MEDIUM', candidate['input_influence_level'])
         self.assertEqual(
             candidate["external_influence"][0]["external_kind"],
             "HTTP_ENDPOINT")
+        scope['external_influence']['candidates'][0]['input_influence'] = {
+            'level': 'HIGH', 'parameters': ['req'], 'reason': '参数影响当前改动'}
+        influenced = normalized_candidates(scope)['candidates'][0]
+        self.assertTrue(influenced['externally_influenced'])
+        self.assertEqual('HIGH', influenced['input_influence_level'])
 
 
 if __name__ == "__main__":

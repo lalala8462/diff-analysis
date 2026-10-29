@@ -10,6 +10,7 @@ from .maven_inventory import analyze
 from .resource_review import normalized_candidates
 from .review_workflow import _write_json
 from .gitops import git
+from .query_contract import sort_input_influence
 
 
 JAVA_TOKEN = re.compile(r'''\s+|//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:0[bB][01_]+[lL]?|0[xX][0-9a-fA-F_]+(?:\.[0-9a-fA-F_]*)?(?:[pP][+-]?[\d_]+)?[fFdDlL]?|(?:\d[\d_]*(?:\.[\d_]*)?|\.\d[\d_]*)(?:[eE][+-]?[\d_]+)?[fFdDlL]?)|(?:[^\W\d]|[$_])[\w$]*|(?:>>>=|>>=|<<=|>>>|>>|<<|==|!=|<=|>=|&&|\|\||\+\+|--|\+=|-=|\*=|/=|%=|&=|\|=|\^=|->|::|\.\.\.)|\S''')
@@ -347,12 +348,36 @@ document.addEventListener('keydown',function(event){if(event.key==='Escape'&&!do
 '''
 
 
-def write_html(root, release, specs, reviews, manifest=None):
+def _influence_label(level):
+    return {'HIGH': '高', 'MEDIUM': '中', 'LOW': '低'}.get(level, '未确定')
+
+
+def _query_influence(candidate):
+    return candidate.get('input_influence') or sort_input_influence(
+        candidate.get('dynamic_sort_references', []), candidate.get('bound_sort_references', []))
+
+
+def _resource_problem(kind, resource):
+    if kind == 'DATABASE_TABLE':
+        return ('本次改动和消费者都访问 %s；若实际共用数据库，原有查询或写入可能与新版行为不一致。' % resource,
+                '核对数据源、相关读写语句及受影响字段，再验证旧消费者的读写结果。')
+    if kind == 'SDK_CONTRACT':
+        return ('消费者仍使用已变化的 %s，可能出现旧字段、方法或枚举处理与新契约不一致。' % resource,
+                '对照变化契约和实际成员使用位置，确认兼容性或配套修改。')
+    if kind in ('REDIS_KEY', 'REDIS_VALUE_DTO'):
+        return ('缓存资源 %s 的变化可能使旧值或其他消费者的读写规则不匹配。' % resource,
+                '核对缓存实例、键规则、值结构及历史缓存数据的读取表现。')
+    return ('动态调用名称 %s 的变化可能使消费者仍按旧名称查找或调用。' % resource,
+            '核对实际类、方法或 Bean 绑定，并执行对应的旧名称调用。')
+
+
+def write_html(root, release, specs, reviews, manifest=None, dependency_scope=None):
     repos = {project: repo for repo, project, _, _ in specs}
     ignored = _noise_changes(release['ledgers'], repos)
     filtered_ledgers = [{**ledger, 'final_changes': [c for c in ledger['final_changes'] if c['id'] not in ignored]}
                         for ledger in release['ledgers']]
-    sdk = analyze(specs, filtered_ledgers, manifest)
+    # 已保存的固定版本事实可用于页面重绘，默认入口仍执行完整分析。
+    sdk = dependency_scope if dependency_scope is not None else analyze(specs, filtered_ledgers, manifest)
     reviewmap = {r['project']: r for r in reviews}
     allfiles, tickets = [], set()
     for ledger in filtered_ledgers:
@@ -372,14 +397,32 @@ def write_html(root, release, specs, reviews, manifest=None):
     table_impacts = table_result.get('impacts', [])
     query_contract = sdk.get('query_contract', {})
     query_priority = {'HIGH': 0, 'MEDIUM': 1, 'LOW': 2}
+    for candidate in query_contract.get('candidates', []):
+        candidate.setdefault('input_influence', _query_influence(candidate))
+        candidate.setdefault('evidence_level', candidate.get('priority', 'UNKNOWN'))
+        candidate['priority'] = candidate['input_influence']['level']
     query_candidates = sorted(
         query_contract.get('candidates', []),
         key=lambda item: (query_priority.get(item.get('priority'), 9),
                           item.get('project', ''), item.get('path', ''),
                           item.get('select_id', ''), item.get('deleted_column', '')))
+    query_groups = defaultdict(list)
+    for candidate in query_candidates:
+        key = (candidate.get('project'), candidate.get('base_sha'), candidate.get('head_sha'),
+               candidate.get('path'), candidate.get('namespace'), candidate.get('select_id'))
+        query_groups[key].append(candidate)
     _write_json(root / 'query_contract_latest.json', query_contract)
     external_result = sdk.get('external_influence', {})
-    external_candidates = external_result.get('candidates', [])
+    query_change_ids = {cid for candidate in query_candidates for cid in candidate.get('change_ids', [])}
+    external_candidates = [candidate for candidate in external_result.get('candidates', [])
+                           if candidate.get('requires_confirmation', True)
+                           and candidate.get('change_id') not in query_change_ids]
+    external_groups = defaultdict(list)
+    for candidate in external_candidates:
+        influence = candidate.get('input_influence') or {}
+        key = (candidate.get('project'), candidate.get('base_sha'), candidate.get('head_sha'),
+               candidate.get('path'), influence.get('method') or candidate.get('change_id'))
+        external_groups[key].append(candidate)
     _write_json(root / 'external_influence_latest.json', external_result)
     shared_result = sdk.get('shared_resources', {})
     shared_impacts = shared_result.get('impacts', [])
@@ -408,54 +451,30 @@ def write_html(root, release, specs, reviews, manifest=None):
         key = (candidate['producer_project'], candidate['consumer_project'])
         resource_groups[key].append(candidate)
     sdk['human_priority_count'] = (len(alerts) + len(resource_groups) +
-                                   len(query_candidates) + len(external_candidates))
+                                   len(query_groups) + len(external_groups))
     sdk['resource_group_count'] = len(resource_groups)
     sdk['resource_candidate_count'] = len(unified_resources['candidates'])
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
-    out.append('<section><h2>比较范围与覆盖</h2>')
-    versions = {item['project']: item for item in release.get('comparisons', [])}
-    for led in release['ledgers']:
-        phase = next((p.get('static_scan') for p in release.get('project_phase_status', []) if p['project'] == led['project']), '未知')
-        version = versions.get(led['project'])
-        label = ('%s → %s　｜　' % (esc(version['old_version']), esc(version['new_version']))) if version else ''
-        out.append('<p><b>%s</b>　%s%s → %s　｜　%d 个差异　｜　提交历史 %s　｜　静态扫描 %s</p>' % (esc(led['project']), label, esc(led['base']), esc(led['head']), len(led['final_changes']), esc(led['history']['status']), esc(phase)))
-    for p in sdk['projects']:
-        if p['source'] in ('登记固定版本', '远端默认分支'):
-            out.append('<p>%s：%s %s　固定 SHA %s（仅单一版本，无法判断升级过程或实际部署）</p>' % (esc(p['project']), esc(p['source']), esc(p.get('branch') or ''), esc(p['head'])))
-    for gap in sdk['gaps']:
-        out.append('<p class="gap">⚠ ' + esc(gap) + '</p>')
-    shared_gaps = shared_result.get('omissions', [])
-    if shared_gaps:
-        out.append('<p class="gap">Redis/反射索引有 %d 处解析或扫描缺口；详情见 shared_resource_latest.json。名称相同不等于相同实例或绑定。</p>' % len(shared_gaps))
-        for gap in shared_gaps[:12]:
-            out.append('<p class="gap">共享资源缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
-    table_gaps = table_result.get('omissions', [])
-    if table_gaps:
-        out.append('<p class="gap">数据库资源索引有 %d 处解析或扫描缺口；详情见 database_impact_latest.json。未发现同表关联不等于无依赖。</p>' % len(table_gaps))
-        for gap in table_gaps[:15]:
-            out.append('<p class="gap">表索引缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
-
-    query_gaps = query_contract.get('omissions', [])
-    if query_gaps:
-        out.append('<p class="gap">查询结果列/排序契约扫描有 %d 处解析或绑定缺口；详情见 query_contract_latest.json。</p>' % len(query_gaps))
-        for gap in query_gaps[:12]:
-            out.append('<p class="gap">查询契约缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
-
-    external_gaps = external_result.get('omissions', [])
-    if external_gaps:
-        out.append('<p class="gap">外部影响面扫描有 %d 处缺口；详情见 external_influence_latest.json。</p>' % len(external_gaps))
-        for gap in external_gaps[:10]:
-            out.append('<p class="gap">外部影响面缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
-
-    out.append('<p class="gap">仅检查本次输入及列出的取证项目；默认分支不代表实际部署。间接依赖、外部父 POM、反射和动态调用可能未覆盖。</p>')
-    out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
     out.append('<section><h2>优先确认 <span class="badge">%d 项</span></h2>' % sdk['human_priority_count'])
-    for candidate in query_candidates:
-        out.append('<article class="card alert"><b>查询结果列与排序参数契约候选 [%s]：%s / %s / %s</b>' %
-                   (esc(candidate.get('priority', 'UNKNOWN')), esc(candidate['project']),
-                    esc(candidate['select_id']), esc(candidate['deleted_column'])))
-        out.append('<p>状态：%s；旧版 %s → 新版 %s；Mapper XML：%s；namespace：%s</p>' %
-                   (esc(candidate.get('status')), esc(candidate['base_sha']), esc(candidate['head_sha']),
+    for candidates, index, candidate in (
+            (group, index, item) for group in query_groups.values()
+            for index, item in enumerate(group)):
+        if index == 0:
+            first = candidates[0]
+            influence = min((_query_influence(item) for item in candidates),
+                            key=lambda item: query_priority.get(item['level'], 9))
+            out.append('<article class="card alert"><b>旧排序字段可能继续被使用：%s / %s（%d 个字段）</b>' %
+                       (esc(first['project']), esc(first['select_id']), len(candidates)))
+            out.append('<p><b>可能的问题：</b>旧输出字段 %s 已删除或改名；继续按旧名排序时，可能产生排序变化或数据库报错，需结合最终 SQL 验证。</p>' %
+                       esc('、'.join(item['deleted_column'] for item in candidates)))
+            out.append('<p><b>外部影响程度：%s。</b>%s</p>' %
+                       (esc(_influence_label(influence['level'])), esc(influence['reason'])))
+            out.append('<p><b>确认动作：</b>分别使用旧字段名和替代字段发起查询，检查最终 SQL、排序结果和错误响应；确认字段白名单是否限制了旧值。</p>')
+        out.append('<details%s><summary>字段 %s（外部影响：%s）</summary>' %
+                   (' open' if len(candidates) == 1 else '',
+                    esc(candidate['deleted_column']), esc(_influence_label(_query_influence(candidate)['level']))))
+        out.append('<p>状态：%s；线索强度：%s；旧版 %s → 新版 %s；Mapper XML：%s；namespace：%s</p>' %
+                   (esc(candidate.get('status')), esc(candidate.get('evidence_level', 'UNKNOWN')), esc(candidate['base_sha']), esc(candidate['head_sha']),
                     esc(candidate['path']), esc(candidate['namespace'])))
         if candidate.get('change_ids'):
             out.append('<p>对应最终净差异：%s</p>' % esc('、'.join(candidate['change_ids'])))
@@ -525,30 +544,45 @@ def write_html(root, release, specs, reviews, manifest=None):
                     out.append('<p>%s:%s　%s　<code>%s</code></p>' %
                                (esc(ref.get('path')), esc(ref.get('line')),
                                 esc(ref.get('kind')), esc(ref.get('evidence'))))
-        out.append('<p class="gap">SELECT 输出列消失不等于数据库 ORDER BY 必然失败；风险判断重点是后端是否允许外部参数动态控制排序，而不是是否能证明某个前端当前正在传该字段。HIGH/MEDIUM/LOW 仅表示静态证据强弱。</p>')
-        out.append('</article>')
-    if query_contract.get('omissions'):
-        out.append('<p class="gap">查询契约扫描缺口 %d 处，详见 query_contract_latest.json。</p>' %
-                   len(query_contract['omissions']))
-    for candidate in external_candidates:
-        out.append('<article class="card alert"><b>外部影响面 [%s]：%s / %s</b>' %
-                   (esc(candidate.get('priority', 'UNKNOWN')),
-                    esc(candidate.get('project')), esc(candidate.get('change_id'))))
-        out.append('<p>该最终差异直接命中外部入口，或可通过一跳显式类型调用关联到外部入口；不要求先还原完整调用链。</p>')
+        out.append('<p class="gap">待确认：上述旧字段在当前数据库及最终生成的 SQL 中能否继续合法排序。</p>')
+        out.append('</details>')
+        if index == len(candidates) - 1:
+            out.append('</article>')
+    for group, index, candidate in ((items, n, item) for items in external_groups.values()
+                                     for n, item in enumerate(items)):
+        influence = candidate.get('input_influence') or {
+            'level': 'MEDIUM', 'reason': '仅找到入口线索，参数是否影响改动点尚未确定。'}
+        if index == 0:
+            out.append('<article class="card alert"><b>改动的输入边界需要确认：%s / %s</b>' %
+                       (esc(candidate.get('project')), esc(influence.get('method') or candidate.get('path'))))
+        out.append('<p><b>可能的问题：</b>%s</p>' % esc(
+            ('上层可传入的 %s 参与本次改动的%s；旧调用方的空值、边界值或参数组合可能产生不同处理结果。' %
+             ('、'.join(influence.get('parameters', [])),
+              '、'.join(influence.get('effects', [])) or '表达式或分支')) if influence['level'] == 'HIGH' else
+            '该改动可关联外部入口，但参数与改动表达式的传播关系尚不明确，仍需确认可触发的输入条件。'))
+        out.append('<p><b>外部影响程度：%s。</b>%s</p><p><b>确认动作：</b>对照改动表达式，检查传入参数的允许值、空值和边界组合，并验证输出或状态差异。</p>' %
+                   (esc(_influence_label(influence['level'])), esc(influence.get('reason'))))
+        if influence.get('side') == 'base':
+            out.append('<p>该输入相关实现只在旧版存在；需确认仍依赖旧实现的调用方是否已适配本次删除。</p>')
+        out.append('<details><summary>查看参数传播与入口证据</summary>')
+        for ref in influence.get('evidence', []):
+            out.append('<p>%s:%s　<code>%s</code></p>' %
+                       (esc(ref.get('path')), esc(ref.get('line')), esc(ref.get('evidence'))))
         for surface in candidate.get('surfaces', []):
-            out.append('<p><b>%s [%s]</b>　%s　%s:%s　%s　<code>%s</code></p>' %
+            out.append('<p><b>%s</b>　%s　%s:%s　%s　<code>%s</code></p>' %
                        (esc(surface.get('external_kind')),
-                        esc(surface.get('priority', 'UNKNOWN')),
                         esc('旧版入口' if surface.get('side') == 'base' else '新版入口'),
                         esc(surface.get('path')), esc(surface.get('line')),
                         esc((surface.get('binding') or '') + '；' + (surface.get('reason') or '')),
                         esc(surface.get('evidence'))))
-        out.append('<p>差异证据：%s</p></article>' % _evidence_link(candidate.get('change_id')))
+        out.append('<p>差异证据：%s</p></details>' % _evidence_link(candidate.get('change_id')))
+        if index == len(group) - 1:
+            out.append('</article>')
     panels = []
     for index, a in enumerate(alerts):
         if a['kind'] == '项目中的多工单交叉':
             tickets = sorted({ticket for item in a['classes'] for ticket in item['tickets']})
-            out.append('<article class="card alert"><b>项目中的多工单交叉：%s</b><p><b>为什么重点展示：</b>同一项目中有 %d 个类的最终差异分别关联多个工单候选，需要核对是否相互影响。</p><p>涉及工单：%s</p><p>按类查看：</p>' % (
+            out.append('<article class="card alert"><b>项目中的多工单交叉：%s</b><p><b>可能的问题：</b>%d 个类的改动关联多个工单；若共同修改了相同方法、字段或条件，可能覆盖另一需求的处理结果。仅同类修改仍需核实。</p><p>涉及工单：%s</p><p>按类查看：</p>' % (
                 esc(a['project']), len(a['classes']), esc('、'.join(tickets))))
             for item in a['classes']:
                 out.append('<details><summary>%s　·　%s%s</summary>' % (
@@ -590,8 +624,8 @@ def write_html(root, release, specs, reviews, manifest=None):
         s = a.get('sdk', {})
         evidence = ('SDK %s / %s · %s:%s · 本次比较 %s → %s（%s → %s）' % (s.get('project'), s.get('module'), s.get('group'), s.get('artifact'), s.get('old_version'), s.get('new_version'), (s.get('base_sha') or '未知')[:12], (s.get('head_sha') or '未知')[:12])) if s else ''
         if a['kind'] == 'SDK 与消费者项目':
-            out.append('<article class="card alert"><b>SDK 与消费者项目：%s</b><p><b>为什么重点展示：</b>%s</p><p>%s</p>' % (
-                esc(a['consumer']), esc('SDK 发生变化，需核对该项目的依赖声明和相关变更类。'), esc(evidence)))
+            out.append('<article class="card alert"><b>SDK 与消费者项目：%s</b><p><b>可能的问题：</b>%s</p><p>%s</p>' % (
+                esc(a['consumer']), esc('消费者声明版本与本次 SDK 新版不一致或无法确认，新契约可能未被采用；需结合兼容性判断是否配套升级。'), esc(evidence)))
             for number, declaration in enumerate(a['declarations']):
                 panel_id = 'consumer-%d-%d' % (index, number)
                 panels.append(_consumer_panel(panel_id, declaration))
@@ -613,7 +647,7 @@ def write_html(root, release, specs, reviews, manifest=None):
             out.append('<p>待确认：是否需要配套修改或升级；源码引用不证明运行时调用或缺陷。</p></article>')
             continue
         ids = '、'.join(s.get('changes', []) + a.get('change_ids', []))
-        out.append('<article class="card alert"><b>%s</b><p><b>为什么重点展示：</b>%s</p><p>%s / %s</p>' % tuple(map(esc, [a['kind'], a['reason'], a.get('consumer', s.get('project', '')), a.get('path', s.get('module', ''))])))
+        out.append('<article class="card alert"><b>%s</b><p><b>可能的问题：</b>%s</p><p>%s / %s</p>' % tuple(map(esc, [a['kind'], a['reason'], a.get('consumer', s.get('project', '')), a.get('path', s.get('module', ''))])))
         if s:
             out.append('<small>%s<br>依赖版本：%s → %s<br>引用：%s<br>工单：SDK %s；消费方 %s</small><p>待确认：是否需要配套修改或升级；静态关联不是缺陷结论。</p>' % tuple(map(esc, [evidence, a.get('old_version', '—'), a.get('new_version', '—'), ', '.join(a.get('imports', [])) or '见依赖声明', ', '.join(s.get('tickets', [])) or '未归属', ', '.join(a.get('tickets', [])) or '未归属'])))
         else:
@@ -641,6 +675,11 @@ def write_html(root, release, specs, reviews, manifest=None):
                 heading = str(kind) + '：' + str(candidate['resource'])
             out.append('<details><summary>%s · %s</summary>' %
                        (esc(heading), esc(candidate['status'])))
+            problem, action = _resource_problem(kind, candidate['resource'])
+            out.append('<p><b>可能的问题：</b>%s</p><p><b>确认动作：</b>%s</p>' %
+                       (esc(problem), esc(action)))
+            out.append('<p>外部影响程度：%s。</p>' %
+                       esc(_influence_label(candidate.get('input_influence_level', 'MEDIUM'))))
             out.append('<p>生产方版本 %s → %s；消费者固定 SHA %s；资源候选 %s</p>' %
                        (esc((candidate.get('producer_base_sha') or '')[:12]),
                         esc((candidate.get('producer_head_sha') or '')[:12]),
@@ -654,11 +693,10 @@ def write_html(root, release, specs, reviews, manifest=None):
             out.append('<p>原始差异：%s</p>' %
                        ' '.join(_evidence_link(i) for i in candidate['change_ids']))
             if candidate.get('external_influence'):
-                out.append('<p><b>外部影响面：</b>该资源变更对应的代码差异位于外部入口候选中：</p>')
+                out.append('<p><b>关联入口证据：</b></p>')
                 for surface in candidate['external_influence']:
-                    out.append('<p>%s [%s]　%s:%s　%s.%s　%s</p>' %
+                    out.append('<p>%s　%s:%s　%s.%s　%s</p>' %
                                (esc(surface.get('external_kind')),
-                                esc(surface.get('priority', 'UNKNOWN')),
                                 esc(surface.get('path')), esc(surface.get('line')),
                                 esc(surface.get('method')), esc(surface.get('side')),
                                 esc((surface.get('binding') or '') + '；' +
@@ -676,9 +714,9 @@ def write_html(root, release, specs, reviews, manifest=None):
                 out.append('</details>')
             out.append('<p>待核实：源码/调用绑定、生产部署与兼容性。</p></details>')
         out.append('</article>')
-    if not alerts and not resource_groups and not query_candidates and not external_candidates:
+    if not alerts and not resource_groups and not query_candidates and not external_groups:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
-    out.append('</section><section><h2>程序关注的场景</h2><ul><li>同类多工单：汇总最终差异工单候选，文件级归因需复核。</li><li>SDK 变化：检查本次变更项目 API/SDK 模块源码和模块版本。</li><li>消费者升级：仅在 SDK 的两个固定版本之间版本发生变化时比较登记项目的声明；只有单版本时不能判断升级。不检查第三方依赖。</li><li>SDK 契约旧用法：展示固定 SHA 的字段、方法或枚举变化及消费者使用候选，import 本身不是重点。</li><li>跨项目数据库表：从变化 SQL/DDL/显式映射位置关联其他固定版本的同名表，均需核实数据源与实例。</li><li>Redis 与反射：通过字面量、简单常量和前缀匹配搜寻固定版本消费者，动态名称保留解析缺口。</li><li>查询结果列与排序参数契约：比较固定 BASE/HEAD 的 MyBatis SELECT 输出字段；只要后端允许方法/请求参数动态控制 PageHelper/orderBy，即使未发现任何前端字面量，也把删除/改名字段列为风险候选，并区分结果字段缺失与 SQL ORDER BY 合法性。</li><li>外部影响面：不要求解析完整调用链；改动直接命中 HTTP、Dubbo、MQ、WebSocket 等外部入口，或经一跳显式类型调用/Mapper 调用可关联到外部入口时，作为独立风险证据，并附加到 SDK、数据库、Redis 等资源候选。</li><li>解析不足：展示未解析父 POM、依赖、扫描和项目范围。</li></ul></section>')
+    out.append('</section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
     for project in sorted({l['project'] for l, _, _, _ in allfiles}): out.append('<option>' + esc(project) + '</option>')
     out.append('</select><select id="ticket" onchange="filter()"><option value="">全部工单</option>')
@@ -691,6 +729,11 @@ def write_html(root, release, specs, reviews, manifest=None):
         for c in changes:
             keys, basis = attribution(c)
             out.append('<p>%s　%s：%s</p>' % (_evidence_link(c['id']), esc(basis), esc('、'.join(keys) or 'EMPTY / 未归属')))
+            for candidate in external_result.get('candidates', []):
+                if candidate.get('change_id') == c['id'] and candidate.get('input_influence'):
+                    influence = candidate['input_influence']
+                    out.append('<p>外部影响程度：%s。%s</p>' %
+                               (esc(_influence_label(influence['level'])), esc(influence['reason'])))
         originals = next(l for l in release['ledgers'] if l['project'] == project and l['base'] == led['base'] and l['head'] == led['head'])
         suppressed = [c for c in originals['final_changes'] if c['path'] == path and c['id'] in ignored]
         out.append(_file_view(repos.get(project), led, path, changes, reviewmap.get(project), suppressed))
@@ -715,6 +758,51 @@ def write_html(root, release, specs, reviews, manifest=None):
                '完整 JSON 见 resource_impact_latest.json。</p>' %
                (len(unified_resources['candidates']), len(resource_groups)))
     out.append('</section>')
+    out.append('<section><h2>比较范围与覆盖</h2>')
+    versions = {item['project']: item for item in release.get('comparisons', [])}
+    for led in release['ledgers']:
+        phase = next((p.get('static_scan') for p in release.get('project_phase_status', []) if p['project'] == led['project']), '未知')
+        version = versions.get(led['project'])
+        label = ('%s → %s　｜　' % (esc(version['old_version']), esc(version['new_version']))) if version else ''
+        out.append('<p><b>%s</b>　%s%s → %s　｜　%d 个差异　｜　提交历史 %s　｜　静态扫描 %s</p>' % (esc(led['project']), label, esc(led['base']), esc(led['head']), len(led['final_changes']), esc(led['history']['status']), esc(phase)))
+    for p in sdk['projects']:
+        if p['source'] in ('登记固定版本', '远端默认分支'):
+            out.append('<p>%s：%s %s　固定 SHA %s（仅单一版本，无法判断升级过程或实际部署）</p>' % (esc(p['project']), esc(p['source']), esc(p.get('branch') or ''), esc(p['head'])))
+    for gap in sdk['gaps']:
+        out.append('<p class="gap">⚠ ' + esc(gap) + '</p>')
+    shared_gaps = shared_result.get('omissions', [])
+    if shared_gaps:
+        out.append('<details><summary>共享资源解析缺口（%d 处）</summary>' % len(shared_gaps))
+        out.append('<p class="gap">Redis/反射索引有 %d 处解析或扫描缺口；详情见 shared_resource_latest.json。名称相同不等于相同实例或绑定。</p>' % len(shared_gaps))
+        for gap in shared_gaps[:12]:
+            out.append('<p class="gap">共享资源缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+        out.append('</details>')
+    table_gaps = table_result.get('omissions', [])
+    if table_gaps:
+        out.append('<details><summary>数据库资源解析缺口（%d 处）</summary>' % len(table_gaps))
+        out.append('<p class="gap">数据库资源索引有 %d 处解析或扫描缺口；详情见 database_impact_latest.json。未发现同表关联不等于无依赖。</p>' % len(table_gaps))
+        for gap in table_gaps[:15]:
+            out.append('<p class="gap">表索引缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+
+        out.append('</details>')
+    query_gaps = query_contract.get('omissions', [])
+    if query_gaps:
+        out.append('<details><summary>查询排序解析缺口（%d 处）</summary>' % len(query_gaps))
+        out.append('<p class="gap">查询结果列/排序契约扫描有 %d 处解析或绑定缺口；详情见 query_contract_latest.json。</p>' % len(query_gaps))
+        for gap in query_gaps[:12]:
+            out.append('<p class="gap">查询契约缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+
+        out.append('</details>')
+    external_gaps = external_result.get('omissions', [])
+    if external_gaps:
+        out.append('<details><summary>外部影响解析缺口（%d 处）</summary>' % len(external_gaps))
+        out.append('<p class="gap">外部影响面扫描有 %d 处缺口；详情见 external_influence_latest.json。</p>' % len(external_gaps))
+        for gap in external_gaps[:10]:
+            out.append('<p class="gap">外部影响面缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
+
+        out.append('</details>')
+    out.append('<p class="gap">仅检查本次输入及列出的取证项目；默认分支不代表实际部署。间接依赖、外部父 POM、反射和动态调用可能未覆盖。</p>')
+    out.append('<p>人工视图已折叠 %d 处 Java 纯 import 或空白格式差异；原始底账和证据保留。无法可靠判断或混有代码变化时仍展示。</p></section>' % len(ignored))
     out.append('<p><a href="report.md">Markdown 证据入口</a> · <a href="ai_review.md">AI 输入材料</a> · <a href="analysis.json">结构化底账</a></p></main>')
     out.append('<aside id="evidence-panel" class="evidence-panel" aria-label="差异证据详情" hidden><div class="evidence-heading"><strong>差异证据详情</strong><button id="evidence-close" onclick="closeEvidence()" aria-label="关闭详情">关闭 ×</button></div><div id="evidence-body" class="evidence-body"></div></aside>')
     out.extend(panels)

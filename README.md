@@ -1,10 +1,8 @@
 # Diff Analysis
 
-面向**多 Java 项目的版本级变更影响审核**。以每个项目固定的 BASE/HEAD Git commit 的最终净差异为底账，结合提交来源、Java 调用关系、跨项目协议线索和人工审核记录，生成可追溯的离线报告。
+面向多 Java 项目的版本差异审核。以固定 BASE/HEAD Git SHA 的最终净差异为底账，结合提交归因、Java 调用关系、跨项目资源线索和人工审核，生成离线 HTML 报告。
 
-**运行要求：Git、Python 3.9+、完整 JDK 8。** 支持 Windows PowerShell/CMD 与 Linux；CI 仅配置 Windows/Ubuntu + JDK 8。不调用模型接口，不执行被分析项目的构建、测试或业务脚本，不自动发布或合并。
-
-> **main 已集成现有分析链路，真实业务集成待验收。** 真实 GitLab、Dubbo、MQ 集成仍待验证；“未发现消费者”不证明没有影响。
+**运行要求：Git、Python 3.9+、完整 JDK 8（含 java、javac）。** 不调用模型 API，不执行被分析项目的构建、测试或业务脚本。
 
 ## 快速开始
 
@@ -21,15 +19,25 @@ javac -version
 # 交互输入多个本地项目或 GitLab MR
 .\.venv\Scripts\python.exe -m diff_analysis wizard
 
-# 或分析一个本地项目的固定版本，替换路径与 SHA
-.\.venv\Scripts\python.exe -m diff_analysis review-local --repo "D:\repos\spms-back" --project "rhf/spms-back" --base "<完整旧CommitSHA>" --head "<完整新CommitSHA>"
+# 或直接指定本地项目与两个完整 SHA
+.\.venv\Scripts\python.exe -m diff_analysis review-local --repo "D:\repos\recon" --project "reconciliation" --base "<旧CommitSHA>" --head "<新CommitSHA>"
+
+# 查看命令及参数
+.\.venv\Scripts\python.exe -m diff_analysis --help
 ~~~
 
-向导会在独立运行目录生成离线 `report.html`、Markdown、JSON 和 AI 证据包；HTML 支持重点场景、工单筛选及左右代码对照。
+打开运行目录中的 **report.html**，查看优先确认项、触发条件、可能问题和代码对照。支持场景仅在本 README 说明；通用解析缺口收在 HTML 页尾“比较范围与覆盖”，只在妨碍具体判断时附到对应确认项。
 
-HTML 人工视图默认折叠可可靠识别的 Java 纯 import 和空白格式差异，并保留折叠列表与原始证据；字符串、注释、其他语言、混合变更或无法可靠判断的片段仍展示。import 变化可能影响类型绑定，折叠不代表已经证明无影响。
+安装、GitLab Token、多 MR、JAR classpath 清单和 JSON 请求见 [Windows 操作指南](docs/WINDOWS_SETUP.md)。Linux 使用等效命令，Java 分析以 JDK 8 为主要验证目标。
 
-SDK 消费者检查可以通过 `--project-registry projects.json` 补充登记项目：
+## 比较与取证范围
+
+- **比较项目**：使用输入的 BASE/HEAD SHA，最终净差异是原始底账；提交中的工单号仅作为归因线索。
+- **EVIDENCE 项目**：将未修改项目的固定版本纳入 Java 关系分析。在向导选择 EVIDENCE，或追加 `--evidence "rhf/consumer=D:\repos\consumer@<BASE-SHA>@<HEAD-SHA>"`。两侧可为同一 SHA，证据项目不自动计为本次变更需求。
+- **登记项目**：通过 `--project-registry projects.json` 补充 Maven/SDK、数据库表、Redis/反射等扫描范围。单一固定版本不能证明消费者发生过升级。
+- **架构项目**：若存在 `G:/Code/rhf-all/AGENTS.md`，从模块表识别其他服务；每次检查从远端确认并刷新其默认分支，再固定 SHA。默认分支不代表实际部署版本；远端失败、仓库缺失或默认分支不明会记录覆盖缺口。
+
+登记文件示例（UTF-8，相对仓库路径以该文件目录为基准，修订号在运行时固定为 SHA）：
 
 ~~~json
 {
@@ -39,220 +47,79 @@ SDK 消费者检查可以通过 `--project-registry projects.json` 补充登记�
 }
 ~~~
 
-登记文件使用 UTF-8，相对仓库路径相对于登记文件所在目录；运行时将修订号固定为 SHA。本次输入的项目使用向导指定的旧版和新版，其他登记项目仅检查单一固定版本，不能判断是否升级。仅当本次变更项目产出的 API/SDK 在所选两个修订号之间版本发生变化时，对照登记项目的 Maven 引用；不检查第三方依赖版本，也不查询生产或最新发布版本。API/SDK 自动识别和 Maven 依赖只基于固定版本源码中的声明；间接依赖、外部父 POM、未登记项目及无法解析的值可能遗漏，报告会提示覆盖限制，不运行 Maven。
+登记项目和架构项目参与受支持的依赖、资源扫描，不代表已完成跨项目 Java 调用绑定。架构 Git 副本保存在 `project_code/<服务名>/`，MR 副本在 `project_code/_mr/` 的独立目录；不会切换或重置原工作区。副本不检出工作树、不自动清理，远端失败时不以过期缓存冒充最新结果。
 
-每次生成外部依赖检查时，若本机存在 `G:/Code/rhf-all/AGENTS.md`，工具从其中的模块表识别服务：本次比较项目仅使用指定 SHA；其余服务每次从远端实时确认默认分支并刷新到独立副本，记录分支与固定 SHA，供 Maven 引用检查。架构项目 Git 数据放在本项目 `project_code/<服务名>/`，MR 克隆放在 `project_code/_mr/` 的独立目录；只读取原仓库的已提交 Git 对象，不切换、重置或覆盖原工作区，副本不检出工作树。远端获取失败、缺失仓库或无法识别默认分支时，报告标明覆盖缺口，不使用过期缓存冒充最新结果。默认分支不是实际部署版本。`project_code/` 是 Git 缓存，不纳入本项目 Git，MR 独立目录不会自动删除。
+## 当前支持的确认场景
 
-需要将**未修改项目的固定版本纳入现有 Java 关系分析**时，在向导选择 EVIDENCE 角色，或为 review-local / review-mrs 追加以下参数：
-
-~~~text
---evidence "rhf/consumer=D:\repos\consumer@<固定BASE-SHA>@<固定HEAD-SHA>"
-~~~
-
-EVIDENCE 两侧允许同一 SHA，不把证据项目的差异自动当作本次需求。登记项目和架构默认分支会参与 Maven/SDK 及已实现的数据库表、Redis/反射固定 SHA 资源扫描；但扫描只覆盖受支持的静态语法、受预算限制，不等于完成所有数据库、Redis 和跨项目调用关系的精确绑定。多个自建 GitLab MR、只读 Token、JAR classpath 清单等操作见 [Windows 操作指南](docs/WINDOWS_SETUP.md)。
-
-## 当前会作为重点展示的场景
-
-下表描述**现有 HTML 首页的实现**，不是已确认缺陷；各项展示固定版本、原因及可追溯证据。
-
-| 场景 | 当前触发条件与限制 |
+| 场景 | 可能问题与确认重点 |
 | --- | --- |
-| 同一类涉及多个工单候选 | 同一 Java 类的最终差异关联多个工单；按项目合并，展开各类和差异。文件级和行级归因仍需人工核实。 |
-| 同次比较中的文件演进 | 上述类可展示范围内的新增、修改和对应提交差异；文件新增后被另一工单修改时，区分中间演进与最终净差异。历史缺失、合并提交和不能确认先后关系要单独说明。 |
-| SDK 自身版本 | 识别为 API/SDK 模块的源码或 POM 变化，且两侧模块版本未变化或无法解析时，提示核对版本。模块命名与静态识别存在覆盖限制。 |
-| SDK 消费者版本 | 本次比较项目产出的 SDK 版本发生变化，消费者声明仍为旧版、与新版不一致或无法判断时，提示确认是否配套升级。只提供单一固定版本时无法判断升级过程。 |
-| SDK 契约使用候选 | 比较直接 Maven SDK 的 Java 字段、简单方法和枚举声明，查找消费者固定版本中有类型作用域线索的实际成员表达式；按消费者项目归组。仅 import 不触发重点，静态候选不证明不兼容。 |
-| 查询结果列与排序参数契约 | 对比 MyBatis `<select>` 旧新输出字段。若受影响查询允许方法/HTTP 请求参数动态控制 `sortName/getOrderBy/PageHelper`，即使没有任何前端代码或旧字段字面量，也将删除/改名字段作为风险候选。输出缺列不等于 `ORDER BY` 必然报错。 |
-| 外部影响面 | 不要求还原完整调用链。最终差异直接命中 HTTP、Dubbo、MQ、WebSocket 等外部入口，或通过一跳显式类型调用 / MyBatis Mapper 调用关联到外部入口时，作为独立风险证据；同时附加到 SDK、数据库、Redis/共享资源等候选。未命中不代表一定不会被外部调用。 |
-| 跨项目数据库表候选 | 本次变化 SQL/DDL/显式表映射关联其他固定 SHA 的表访问位置；同名不等于同实例，实际部署须人工确认。 |
-| Redis、缓存 DTO 与反射候选 | 固定 SHA 下通过 Key/前缀、值类型线索及 Bean/反射名称关联消费者，均需人工核实绑定。 |
-| 统一资源候选及修订 | 为资源关联建立独立 R-* 编号并挂接 ReviewUnit，拆组仅重算归属和问题指纹，原始事实保留。 |
-| 覆盖缺口 | 扫描失败、源码或历史缺失、POM/父 POM 无法解析、版本或范围不完整等需查看阶段状态；未发现线索不表示没有影响。 |
+| 同类多工单与文件演进 | 同一 Java 类的最终差异关联多个工单，按项目汇总并展开类、提交和范围内演进。核对是否相互覆盖；文件、行级归因及工单关系仍需复核。 |
+| SDK 自身版本 | API/SDK 模块源码或 POM 改变，而两侧已知模块版本相同时，核对契约与发布安排。模块及版本无法识别时记录覆盖缺口。 |
+| SDK 消费者版本 | 本次产出的 SDK 在 BASE/HEAD 之间版本改变时，对照消费者声明，核对是否需要配套升级。只检查本次 SDK，不检查第三方依赖；单版本不能判断升级过程。 |
+| SDK 契约旧用法 | 比较字段、简单方法和枚举，查找固定版本消费者中的成员使用；仅 import 不触发重点。优先用 javac 归属到选定 SDK 源码，失败时保留类型作用域词法候选与缺口；归属不证明实际使用的 JAR 版本或运行兼容性。 |
+| 查询结果列与排序参数契约 | 比较 MyBatis SELECT 输出字段，关联 Mapper、调用处及动态排序。删除/改名字段遇到参数可控的 PageHelper/orderBy，即使没有前端字面量也列为候选。结果字段缺失与 SQL ORDER BY 合法性分别确认；同一查询的多个字段在 HTML 合并为一项，二级展开，原始候选独立保留。 |
+| 改动处的外部输入影响 | 判断上层传入参数是否影响当前改动的表达式或分支，按下表分级。HTTP、Dubbo、MQ、WebSocket 的直接或一跳显式调用/Mapper 入口作为补充证据，可附到 SDK、数据库、Redis 等候选。 |
+| 跨项目数据库表 | 从变化 SQL、DDL、显式映射关联其他固定 SHA 的同名表访问。核对数据源、Schema 和实例；同名不证明访问同一库。 |
+| Redis 与缓存值 | 通过字面量、简单常量、Key/前缀和值类型线索关联消费者，核对键规则、结构与历史缓存兼容性；动态名称保留缺口。 |
+| 反射与 Bean 名称 | 查找固定版本中的类名、方法名、Bean 名称使用候选，核对旧名称是否仍被调用；名称匹配不证明实际绑定。 |
 
-程序还会生成同文件、同符号、Java 调用路径和潜在消费者等候选，供 `report.md`、`questions.md` 与 JSON 进一步核查；它们目前不一定被整理为 HTML 首页重点。`discover-connections`、`bind-connections` 和 `contract-context` 是需要单独执行的辅助步骤，不代表默认扫描已完成跨项目数据库或接口绑定。
+资源候选保留独立 `R-*` 编号及原始 `D-*` 差异引用；HTML 按变化项目与消费者项目汇总 SDK 契约、数据库、Redis、反射资源，明细可展开。同文件、同符号、调用路径等其他线索保留在 Markdown/JSON 中，不一定成为首页优先项。
 
-## 阶段 0：固定 SHA 源文件索引（已实现基础能力）
+### 外部输入影响等级
 
-运行 `discover-connections` 时，会按“项目 + 固定 Git SHA + 索引规则版本 + 文件类型范围 + 文件数量上限”读取或创建源文件元数据索引，正常运行缓存位于 `.diff-analysis/cache/source_snapshots/`，跨运行目录复用；独立测试目录的缓存则位于自身目录内。缓存损坏时重新扫描，文件路径不可安全处理或超出数量上限会保留 omissions；BASE/HEAD 相同 SHA 可共享同一索引，不读取未提交的工作区修改。
+以**当前改动点**为边界，而非服务边界：
 
-**边界：阶段 0 的通用索引只缓存 Java/XML/SQL/配置文件的 Git 路径和 blob SHA；阶段 1～4 已在各自模块实现首期词法资源提取、消费方候选与修订叠加。** 通用索引本身仍不包含完整 SDK 语义、数据库/Redis 实例身份或反射真实调用。现有协议发现结果仍是候选，不推断运行时连接。
+| 等级 | 判断依据 |
+| --- | --- |
+| 高（HIGH） | 请求或上层调用传入的参数影响改动表达式或包围分支，包括可识别的简单局部变量传播、方法参数动态排序。 |
+| 中（MEDIUM） | 参数来源或传播不明、复杂表达式无法解析，或只有外部入口线索而未绑定到改动点。 |
+| 低（LOW） | 仅受字面量或可确定的内部值影响；不会仅因入口邻近而提升等级。 |
 
-## 阶段 1：SDK 契约和未修改消费者（首期静态候选）
+等级表示受外部输入影响的程度，不等于缺陷严重性或缺少校验。内部固定值也可能引发兼容问题。查询候选的 `evidence_level` 另表示静态证据强弱，与输入影响等级分开。
 
-现支持直接 Maven 依赖声明匹配的 SDK（`api`/`*-api`/`sdk`/`*-sdk` 模块），根据最终 Git 净差异对比前后 Java 字段类型及序列化名称、简单方法签名和枚举常量。消费者从固定 SHA 的整个 Java 源文件清单查找显式类型 import、局部类型声明及成员表达式，**即使消费者无代码改动**也能产生候选。报告按 SDK 与消费者项目合并，展示生产方旧/新契约、两侧 SHA、消费者固定 SHA、代码行及声明的 Maven 版本；只有 import 不会生成重点项。保留 SDK 自身与消费者的版本检查。
+## 报告与证据
 
-**限制**：首期属于词法与类型作用域候选，不等于 JDK 8 javac 精确字段绑定；不自动证明不兼容。复杂泛型、同名重载、多层继承、跨行声明、动态代理、字段语义和间接 Maven 依赖可能无法解析，扫描预算及异常会形成缺口。消费者仅覆盖登记或显式输入的固定 SHA，不推定实际部署版本；生产环境与 Java 运行行为需人工验证。后续会结合既有 javac AST 增强解析精度。
+默认每次生成到本项目 `.diff-analysis/runs/<UTC时间-随机标识>/`；`--run-root` 只能指向该根目录或其子目录。
 
-## 阶段 2：跨项目数据库表索引（已实现首期静态候选）
+| 产物 | 用途 |
+| --- | --- |
+| **report.html** | 优先确认项、分组明细、代码对照；比较范围与覆盖放在页尾。纯 import/空白差异经可靠识别后默认折叠，原始证据保留，折叠不表示已确认无影响。 |
+| report.md、questions.md/json、group_reports/、evidence/ | 详细问题、工单归组、固定版本差异和源码窗口。 |
+| stage_manifest.json、dependency_scope.json | 阶段状态、比较及取证范围、失败与覆盖缺口。 |
+| query_contract_latest.json、external_influence_latest.json | 查询字段/排序契约、改动处输入影响和入口证据。 |
+| database_impact_latest.json、shared_resource_latest.json、resource_impact_latest.json | 数据库、共享资源及统一资源候选。 |
+| instance_scope_latest.json | HEAD 配置中的数据源/Redis profile 与端点摘要。配置匹配不证明实际部署同实例，配置不同也不证明环境隔离；不导出凭据或完整连接 URL。 |
+| ledger_checkpoint.json、analysis.json | 原始 Git 底账、版本与分析事实；人工修订只更新派生资料。 |
+| unified_*、contract_context_latest.json、supplements/、review_*、revisions/ | 关系图、补证和人工修订资料；部分需执行辅助命令后生成。 |
+| ai_review.md | 可交给工具外 AI 的离线资料；导出成功不表示已被完整阅读。 |
 
-HTML 首页和 `database_impact_latest.json` 已纳入表级影响候选：针对 CHANGE 项目固定 BASE/HEAD 的最终净差异，提取 MyBatis XML（select/insert/update/delete）、SQL 脚本 DDL/读写语句、Java 字面量 SQL 及显式 `@TableName` / `@Table(name=...)` 映射。只从**实际重叠本次变化行的表访问**出发，反向查找其他已登记或已输入项目在固定 SHA 的访问位置（即使消费者没有改动）。结果按变化项目、表名和消费者项目合并，保留双方 SHA、表读写角色、行号、D-* 差异 ID、数据源名称线索和缺口。
+`.diff-analysis/` 与 `project_code/` 均不纳入 Git。固定 SHA 源索引缓存只复用受扫描规则、文件范围和预算约束的结果，不代表完整业务关系。
 
-分析使用源 Git blob，不检出、不连接数据库，不执行被分析项目代码。按项目 SHA、表解析规则和预算缓存扫描结果；源文件超限、动态 SQL、文件解析失败等写入 omissions。**同名表仅表示 SOURCE_TABLE_TOKEN_ONLY 候选，绝不代表已经确认相同实例、Schema、路由或业务影响。** 同名异数据源 / 异 Schema 需人工确认。暂不支持字段血缘、运行态连接、多层 Java 字符串拼接和完整动态 SQL，真实 ADPTS/WebAPI 案例仍待验收。
+## 辅助命令
 
-## 查询字段与排序参数契约检查（首期静态候选）
+以下步骤按需执行；自动报告不代表已完成协议绑定或人工审核。参数见 `<命令> --help` 和 [操作指南](docs/WINDOWS_SETUP.md)。
 
-`query_contract.py` 从 Git 固定 BASE/HEAD 读取 MyBatis `<select>` 输出字段，保留原始 SELECT 表达式并区分普通底层列删除、表达式/聚合别名删除以及同一表达式的别名改名。随后绑定 `namespace + select id → Mapper 方法 → Mapper 调用方法 → PageHelper/getOrderBy`。
+| 命令 | 用途 |
+| --- | --- |
+| catalog-add / catalog-list | 管理本地登记的项目范围。 |
+| baseline-local / baseline-mr / baseline-status / baseline-verify | 建立固定版本基线、查看状态并人工确认源码与扫描范围；确认不代表业务依赖完整。 |
+| rebuild-checkpoint | 从已有 Git 底账恢复基础报告。 |
+| discover-connections / bind-connections / rebuild-unified | 搜索协议线索、校验两端固定版本与人工部署声明、更新统一关系图。人工声明与代码吻合仍不等于运行时链路。 |
+| contract-context / auto-evidence / semantic-evidence / supplement | 为问题补充固定 SHA 的方法、契约和消费者上下文。 |
+| revise-groups / recompute-review | 拆分、移动或合并审核单元并重算派生资料，保留原始差异。 |
+| import-review / import-basis-check / review-status | 导入人工或外部 AI 判断、复核依据、查看分歧和待重审项。 |
 
-这里的判断原则不是“能否证明某个前端当前正在传这个字段”，而是**后端是否允许外部输入控制排序字段**。只要排序对象来自方法参数，请求参数类型包含 `sortName` / `sortType` / `getOrderBy()`，并进入 PageHelper 或动态 orderBy，该查询的原有输出字段被删除或改名时就应进入风险候选。若还能静态确认对应 Spring Controller/HTTP 入口，证据等级进一步提高；不需要继续追踪 Vue/JS/TS、API 封装或完整前端调用链。
+## 分析边界与开发验证
 
-**证据等级：** `HIGH` 表示已确认固定排序继续引用旧字段，或后端动态排序能力同时存在 HTTP 外部入口；`MEDIUM` 表示已确认方法参数可动态控制排序，但外部入口或参数类型信息仍不完整；`LOW` 仅为同项目旧字段排序字面量等较弱线索。等级只表示静态证据强弱，不代表已确认缺陷。
+静态结果是待确认线索。缺失依赖、父 POM、动态 SQL、复杂重载、反射/代理、异步调用和扫描预算均可能造成误报或漏报；“未发现消费者”不证明没有影响。输入传播不是完整数据流分析，SDK 源码归属不证明 Maven 实际选中的 JAR。
 
-**边界：** SELECT 未返回普通底层列时，部分数据库/查询结构仍可能允许按该列 `ORDER BY`；表达式/聚合别名删除或改名后继续按旧别名排序的风险通常更高。动态 SELECT 列、无法确定别名的复杂表达式和通配符保留 omissions，不直接下缺陷结论。
+实例证据仅来自固定 HEAD 的受支持配置，不验证配置中心、运行环境、动态路由或生产连接。程序不连接数据库或 Redis，不构造预计合并树，不分析所选范围以前的共同修改，不自动合并或发布。真实 GitLab、跨服务协议与业务兼容性仍需结合实际案例验收。
 
-## 外部影响面通用规则
-
-`external_influence.py` 对最终差异判断“改动点是否可能受外部调用影响”，目前覆盖 Spring HTTP Mapping、Dubbo 服务、常见 MQ Listener 和 WebSocket/STOMP 入口。它**有意不要求完整调用链可解析**：改动方法直接命中外部入口，或通过一跳显式类型调用关联到外部入口，都可以形成风险证据；MyBatis XML 变更也会经 `namespace + id → Mapper → 调用方法` 做至多一跳外部入口判断。没有命中只表示静态入口证据不足，不能反推该改动一定不会被外部调用。
-
-这一外部影响面会写入 `external_influence_latest.json`，并挂接到统一资源候选中。因此 SDK、数据库、Redis/缓存/反射等检查除了原有“资源是否变化、是否有消费者”外，还会额外显示对应差异是否直接或一跳处于外部入口影响面。后续新增检查也应优先采用同一原则：**识别外部可控输入和外部入口，而不是把完整调用路径解析作为产生风险候选的前置条件。**
-
-## 阶段 3：Redis / 反射 / Spring Bean（首期实现）
-
-`shared_resources.py` 在每个项目固定 Git SHA 下建立 Java/XML 名称和源码位置的只读索引，记录：Redis 操作（读取、写入、删除、TTL）、Spring `@Cacheable` / `@CachePut` / `@CacheEvict`、简单 key 常量与动态前缀、Bean 注解及 XML Bean ID、`Class.forName`、`getMethod` / `getDeclaredMethod` 和 `getBean`。当生产侧最终代码变化触及这些名称时，反查其他项目的固定版本调用。对缓存 DTO，只对可由变量声明推出写入值类型、且字段契约发生变化的场景提供候选；并非完整类型和序列化流分析。
-
-索引基于项目、SHA 和规则版本缓存，输出 `shared_resource_latest.json`；动态名称、未知 key、扫描上限和失败都产生覆盖缺口。**同名 Redis Key、同名 Bean、反射方法名不能证明同一容器、实例、类或运行时绑定。** 动态 SpEL、跨方法常量传播、完整序列化契约、复杂反射路径与 Redis 实例/环境精确身份仍待增强。
-
-## 阶段 4：统一资源报告与修订驱动重算（首期实现）
-
-SDK、数据库表、Redis 和反射/Spring 关联统一规范为 `resource_impact_latest.json` 的固定版本资源候选：`R-*` 身份独立于人工分组，保留生产方/消费者项目、源码位置、双方 SHA、原始 `D-*`、名称匹配状态和缺口。HTML 继续显示各场景的重点证据，并新增“统一资源关联索引”；`shared_resource_latest.json` 和 `database_impact_latest.json` 分别提供原始场景结果。
-
-`resource_review_latest.json` 将资源候选按当前 ReviewUnit 的 **主归属组** 挂接，产生 `RESOURCE_CONSUMER` 问题，进入现有 `review_package_latest.json` 的问题/证据计划及指纹。执行 `revise-groups` / `recompute-review` 时，仅从缓存的固定 SHA 资源事实重算受影响归属，未变组可复用；当人工拆分新行且原资源只在旧行出现，保留 `SOURCE_NOT_IN_EXACT_UNIT_RANGE` 缺口，不推定旧行位置。**底层资源事实、原始 D-* 底账和旧审核记录均不改写。**
-
-目前是**精确归属约束与问题指纹**，不是跨全语法树的字段级数据流或运行时精确绑定。SDK / DB / Redis / 反射之间跨资源的实际依赖关系仍需人工核实；未命中不等于不存在调用者。所有分组与关联是待确认候选。
-
-## 已提供的分析链路
-
-| 环节 | 代码和产物 | 证据边界 |
-| --- | --- | --- |
-| 固定输入 | 按项目、角色、BASE/HEAD SHA 保存 Git 文件事件、最终净差异、来源候选，Git 底账优先落盘 | 提交任务号不等于需求；版本组合不等于部署组合 |
-| Java 关系 | JDK 8 javac AST 与可归属方法标识；两侧调用边、未解析调用、多来源反向传播 | 缺依赖、动态代理、反射和不确定重载不能自动证明调用 |
-| 跨项目依赖 | discover-connections 搜索 Dubbo/HTTP/MQ/数据库源码线索；bind-connections 校验两端固定版本、协议身份及人工部署声明，进入统一关系图 | USER_ATTESTED_MATCH 只表示人工声明和代码吻合，**不是运行时链路** |
-| 问题及取证 | 生成 ReviewQuestion；contract-context 定位受影响消费者的分支、DTO/枚举、MyBatis/SQL 候选位置；读取完整方法或契约文件 | 标识符共现不是类型绑定或业务数据流证明 |
-| 审核记录 | import-review 保存人工确认的 ExpectedGoal、规则点以及人工/外部 AI 独立判断；import-basis-check 单独复核依据 | 结构化引用合法不证明结论成立；AI 实际阅读范围未知 |
-| 人工修订 | revise-groups 拆分、移动、合并 ReviewUnit；局部更新跨项目传播、问题和必要证据计划，保留修订历史 | 不从新版拆分行推算旧版行；不改写原始 D-* 底账 |
-
-统一图中的方法和协议端点均附项目、侧别和 Git SHA，沿 caller → callee 的反方向追踪潜在消费者。端点锚定不唯一、协议身份或版本未知时保留候选及 omissions，不建立虚假的确定关系。
-
-~~~text
-review-local / review-mrs / wizard   选择项目与固定版本
-rebuild-checkpoint                  由 Git 底账恢复基础报告
-discover-connections                检索协议线索
-bind-connections                    核验两端代码和部署声明
-rebuild-unified                     更新版本统一图与影响传播
-contract-context                    变化字段、方法及消费者分支候选
-auto-evidence / semantic-evidence   按问题取完整方法或契约文件
-supplement                          固定 SHA 的受限代码补证
-revise-groups / recompute-review    归属修订与局部重算
-import-review / import-basis-check  判断、目标与依据复核
-review-status                       查看分歧和待重审结论
-~~~
-
-不内置 AI 客户端。用户可将离线报告交给本地 AI，再通过 import-review 导入其结构化判断。所有自动归组、提交归因和跨项目关系仍需审核者核实。
-
-## 运行目录与阅读顺序
-
-默认每次在项目的 .diff-analysis/runs/ 下创建独立的 UTC 时间＋随机标识目录；`--run-root` 只能指定该目录内的子目录。建议依次查看：
-
-1. **report.html、stage_manifest.json、dependency_scope.json**：人工重点、比较及取证范围、阶段状态和覆盖缺口。
-2. **questions.md / questions.json、group_reports/、evidence/D-*.md**：问题、固定版本差异及代码窗口。
-3. **query_contract_latest.json、external_influence_latest.json、resource_impact_latest.json**：查询输出/动态排序风险、直接或一跳外部影响面，以及统一 SDK/数据库/Redis 等资源候选。
-4. **unified_graph_latest.json / unified_impact_latest.json**：版本关系边、反向影响与遗漏；导入协议绑定前仍保留 Java 静态图。
-5. **contract_context_latest.json、supplements/**：执行相应命令后生成的完整方法、契约及字段、分支候选；读取受固定 Git SHA、轮次和字节预算约束。
-6. **review_package_latest.json、review_state.json、resource_review_latest.json、revisions/**：当前问题/证据计划、人工归属、资源外部影响证据、预期目标、判断与版本化快照。
-7. **ai_review.md**：用于工具外 AI 的离线资料；导出成功**不表示 AI 已完整阅读**。
-
-ledger_checkpoint.json 保存原始 Git 底账；analysis.json 保存版本和分析事实。人工修订只更新派生资料，**不覆盖**原净差异。向导和比较命令只在本次独立运行目录生成报告与证据，不再生成旧版兼容报告。
-
-## 后续重点场景与代码改动方案
-
-**阶段 1 至 4 的首期静态候选与资源修订链路已实现；精确类型/实例绑定、复杂表达式及真实业务验收仍为后续工作。** 目标是在静态扫描时记录跨项目使用关系，比较时从本次真正变化的契约或资源反向查找消费者，并将同一变化原因按消费者项目合并，支持逐项展开证据。依赖版本、部署环境、数据库或 Redis 实例无法确认时保留待确认候选，不推定缺陷或无影响。
-
-### 1. SDK 契约变化与旧用法
-
-- 已调整 [Maven/SDK 检查](diff_analysis/maven_inventory.py) 和 [HTML 重点项](diff_analysis/human_report.py)：仅因变更类 import SDK 不再生成重点项；保留 SDK 自身及消费者版本检查。
-- 比较固定版本内对外 API/SDK 的方法参数、返回类型、DTO 字段与序列化名称、枚举值/映射、约束或注释等契约变化；字段含义改变需结合前后代码和业务证据，不能仅凭名字或注释宣称语义变化。
-- 查找消费者对**实际变化的类型、方法、字段、枚举或条件**的使用，包括本次没有修改的消费者；重点展示旧调用、旧参数、旧字段或旧枚举处理仍存在且可能与新契约不一致的候选。消费者类有其他无关改动，不能因此视作已完成配套修改。
-- 区分“确有静态使用证据”“仅名称/类型线索”“版本或绑定未知”；列出生产方变化、消费者使用位置、两侧 SHA、依赖版本和待确认问题。证据不足时不输出确定不兼容结论。
-
-### 2. 反射和 Spring Bean 名称调用
-
-- 已在独立固定 SHA 资源索引中记录 `Class.forName`、方法名查找、Spring Bean 按名获取及 Bean 注解/XML 名称，支持部分简单字面量/常量。后续仍需结合 [Java 扫描器](diff_analysis/scanner.py) 的 javac 精确绑定与复杂表达式。
-- 比较时将类名、方法名、签名或 Bean 名称的变化与记录的调用点匹配；展示调用点、可能目标、固定版本及推断依据。对动态拼接、配置外置、多候选或无法解析的名称记录覆盖缺口，不能按相同字符串直接认定调用关系。
-
-### 3. 跨项目数据库表
-
-- 已建立 MyBatis XML、简单 Java SQL/注解、DDL 和显式表映射的固定 SHA 表级使用索引；复杂动态 SQL 及数据源身份解析仍待扩展。首期以**表**为关联单位，不要求字段级血缘。
-- 已从实际变化行重叠的 DDL、Mapper/SQL 和显式 PO 表映射线索发现可能涉及的表，再列出其他项目相应固定版本的访问位置；ADPTS 与 WebAPI 的 `trans_record` 真实案例仍待核验。无显式表映射、动态 SQL 或表名不能确定时保留缺口。
-- 同名表但无法确认同一个数据源/实例时，仍以**待确认候选**列出；数据源、库名、路由和环境证据应随结果展示，不能把表名相同当作已确认共库。只读源码与配置，不直接访问或修改数据库。
-
-### 4. Redis 缓存结构与使用方
-
-- 已静态记录部分 Redis key/前缀、简单常量和读写/删除/过期位置，能根据显式值变量类型与 DTO 字段差异生成候选；完整序列化结构及 SPMS、WebAPI、CPS、对账的实际业务覆盖仍待验证。
-- 本次缓存 key、结构或读写约定变化时，列出其他项目的候选使用方、固定 SHA 和相关代码；同一个变化按消费者项目合并，并保留不同 key 和使用点。
-- Redis 实例、库、环境或动态 key 无法确认时仍列为**待确认候选**；名称相似不证明共享同一缓存，也不能据此断言序列化兼容或运行时连接。
-
-### 5. 扫描、报告与验收顺序
-
-1. **建立版本索引**：已具备固定 SHA 源文件元数据索引及缓存；后续仍需扩展现有扫描与关系图，为上述契约、反射、表及缓存资源保存项目、固定 SHA、位置、解析方式和缺口；按项目 SHA 与扫描规则版本复用结果，避免每次重复全量扫描。比较项目保留 BASE/HEAD 两侧，默认分支取证项目仅有单侧 SHA，不能推断其未修改或实际部署版本。
-2. **识别变化并关联消费者**：已从最终净差异出发，为 SDK、数据库表、缓存、Bean/反射名称生成弱候选与未解析缺口；后续完善确定的 javac 字段绑定、实例身份和更精准的跨资源图谱，不跨 BASE/HEAD 混接为确定调用链。
-3. **收敛首页重点项**：已建立按“变化源／资源 + 消费者项目”的统一 R-* 资源索引与 HTML 汇总，保留既有场景明细；进一步去重和折叠冗余卡片仍待优化。数据库/Redis/Bean 名称未绑定时只显示待确认候选。
-4. **验收**：以构造仓库覆盖 SDK 字段/枚举/参数变化但消费者沿用旧逻辑、常量与动态反射、Bean 名称变化、同表不同数据源、Redis key/DTO 变化和无关 import。再以固定 SHA 验证 ADPTS/WebAPI 表访问及 SPMS 缓存案例，记录漏项、误报、解析缺口和人工核查结果；静态线索不等于真实部署或运行验证。
-
-预计改动位置：在 `diff_analysis/java/JavaAstScanner.java` 和 `diff_analysis/scanner.py` 扩展源码提取，在 `diff_analysis/protocol_discovery.py` 与关系图模块补充资源和调用线索，在 `diff_analysis/maven_inventory.py` 关联 SDK 契约及消费者，并在 `diff_analysis/human_report.py` 调整重点项归组和证据展示；相应补充 `tests/` 中的构造仓库测试。具体复用范围以实施时的代码结构为准。
-
-## 四阶段代码评审（2026-10-27）
-
-已检查四阶段的缓存、契约、SQL、Redis/反射、资源归属及报告链路，并对主要风险做定点修复。详见 [四阶段代码评审与遗留项](docs/FOUR_STAGE_REVIEW.md)。
-
-- **阶段 0**：源索引缓存校验补充实际 `file_count` 一致性与截断声明；符合扩展名的符号链接未扫描时增加显式遗漏记录。索引仍是源码 Git 对象事实，不是完整业务关系。
-- **阶段 1**：SDK 方法/字段/枚举的证据 ID 按**具体旧/新声明行与 D-* 区间**筛选，防止单个成员错误继承整个 SDK 的全部差异；移除无用的 SDK 全 Java 目录扫描；泛型参数分隔支持 `Map<String, Integer>`；注释和字符串中的伪用法不产生消费者证据。
-- **阶段 2**：已复核 `DELETE FROM` 等基本读写分类；表级关联继续采用变化行重叠与同名候选，**同名不是同实例**，跨 Schema/数据源证据不足时保持待确认。复杂动态 SQL 和字段级关系未实现。
-- **阶段 3**：读取字符串/字符常量前先区分注释，Redis Key 中 `http://` 等文本不会因 `//` 被截断；Java 日志或字符串中的伪 Redis/Bean/反射调用被排除。仍不证明序列化格式、Bean 作用域或 Redis 连接实例相同。
-- **阶段 4**：统一资源 `R-*` 按固定版本与资源身份去重合并 D-* 及消费者位置，避免人工修订索引因重复 ID 覆盖证据。人工拆组仍只更新派生问题/归属，保留旧侧未知行和原始差异。
-
-**验证边界**：已对部分隔离解析场景做本地检查；新增回归用例和整个仓库的 Windows/Ubuntu + JDK 8 自动测试还未完成可靠执行。GitHub Actions 出现 Job 在零执行步骤即失败的情况，需先排查 Runner、账户/配额及工作流配置；不应推断为测试代码失败或通过。当前功能为**首期静态候选**，不能标注“生产可用、精确绑定、无遗漏”。
-
-## 四阶段代码评审与修复记录（2026-10-27）
-
-本次检查固定 SHA 索引、SDK 契约提取、数据库 SQL/MyBatis、Redis/反射候选、HTML 汇总以及 ReviewUnit 修订流水线。已修复数据库 `DELETE FROM` 可能错标为 READ 的解析顺序，并补充对应回归用例；SQL 词法扫描同时排除注释和字符串字面量中的伪表引用。数据库解析规则版本升级，避免复用旧缓存结果。
-
-**必须区分已实现与已验收：**本轮仅确认静态实现路径及回归用例已提交，没有在此处执行完整 Python unittest 与 JDK 8 Java AST 集成测试。GitHub Actions 的之前几次运行在执行步骤前失败，并不能证明代码正常或异常。
-
-**仍有风险**：Java SQL 字符串拼接、MyBatis 动态 SQL、SDK 重载及跨项目实际 Maven 依赖、Redis 操作对象的值类型推断、反射名称拼接和容器绑定，都存在静态误报/漏报。生产部署的数据库实例和缓存实例未经验证；同名仅可作为候选。对实际 ADPTS/WebAPI 表访问、SPMS/WebAPI Redis 使用、消费者固定 SHA 的端到端验收仍须以真实仓库运行结果判定。
-
-## 四阶段审查补充：扫描结果完整性
-
-审查发现并修复 Spring Cache 没有显式 Key 时被错误标记为精确键的风险。现在这类注解只输出 Key 命名空间前缀，并记录 `CACHE_KEY_GENERATED_UNRESOLVED`；增加对应回归用例。数据库与共享资源候选达到单关联证据上限时，会显式记录 `TABLE_EVIDENCE_LOCATIONS_TRUNCATED` / `RESOURCE_EVIDENCE_LOCATIONS_TRUNCATED`，防止用户把截断的使用位置误认为完整清单。
-
-这些修复不提升静态规则到运行时精确绑定。真实项目测试、完整 unittest/JDK 8 CI 仍未成功验证，不能声称四阶段已经通过全面验收。
-
-## 新增：SDK JDK 8 AST 归属、实例配置证据与首页去重（2026-10-28）
-
-本轮把 SDK 使用侧从**仅词法候选**升级为**优先 javac 元素归属**。新增 `diff_analysis/java/SdkBindingScanner.java` 和 `diff_analysis/sdk_ast_bindings.py`：使用完整 JDK 8 的 Java Compiler API，在隔离临时目录中读取 SDK 的固定 BASE/HEAD SHA 与消费者 HEAD SHA 的 Java 源码，执行 `parse/analyze`，禁用注解处理器且不执行 `generate()`、不调用业务构建脚本。对消费侧调用，只有当 Java 符号的 owner、成员类型、名称、参数签名与同一次 javac 分析中 SDK 声明符号相同，且 `Trees.getPath(Element)` 确认该符号真正声明在固定 SHA 的 SDK 源文件中、SDK 声明落在该变化契约的源码位置时，才标注 `JAVAC_ATTRIBUTED_SDK_SOURCE`。无法归属则继续展示原有 `TYPE_SCOPED_LEXICAL_CANDIDATE`，并通过 SDK AST gaps 记录缺失依赖、诊断、预算或工具不可用。SDK 合同变动的来源成员提取目前仍有词法覆盖限制，不支持所有复杂重载与生成源码。
-
-**注意：JDK 8 AST 证明的是“使用点归属到本次选定的 SDK 源码符号”，不是 Maven 实际选中的已编译 JAR，不代表生产发布版本或升级兼容性。** 多模块源码、外部依赖、继承/泛型边界、注解生成代码可能导致扫描无法完成。消费者源文件与 SDK 源文件会依据 Git blob 物化到临时目录，原工作区不修改；超过扫描预算会记录缺口。
-
-新增 `diff_analysis/instance_identity.py`：只读取各项目 **HEAD 固定 SHA** 的 `application.properties` / `application.yml` / `application.yaml` 及命名 profile 变体。解析明确可用的 JDBC URL（MySQL、MariaDB、PostgreSQL、部分 Oracle）、Redis 主机/端口/逻辑 DB，以及 Redis Sentinel master/节点/逻辑 DB，生成**不包含明文密码和端点地址的摘要**。项目间同类型资源在唯一相同 profile 的端点摘要相同，仅报告 `CONFIG_ENDPOINT_MATCH_NOT_DEPLOYMENT_PROOF`；不同则 `CONFIG_ENDPOINT_MISMATCH_UNCONFIRMED`；环境/profile/路由未知则 `CONFIG_IDENTITY_UNKNOWN` 等状态。配置来源文件、profile、拓扑和脱敏端点摘要写入 `instance_scope_latest.json`，表与 Redis 候选还包含两侧配置来源路径；不会导出凭据或完整连接 URL。**静态配置相同不是实际部署到同一实例；配置不同也不证明真实业务环境完全隔离。** 动态配置、配置中心、环境变量、动态数据源路由、Redis Cluster 和生产态连接尚不具备精确验证能力；不会连接数据库、Redis 或读取明文凭据。
-
-HTML 首页对 SDK 契约、数据库表、Redis 和反射等资源候选，改为以**（变化项目，消费者项目）**为单位生成一张重点卡片，并在卡片内按唯一 `R-*` 资源展开明细、`D-*` 证据、双方源码位置和配置身份线索。原有 SDK 版本风险、多工单风险保持独立类别，不误并入资源卡片。统一资源索引保留结构化输出但不再重复绘制整套卡片；`human_priority_count` 以卡片数量计，`resource_candidate_count` 另记候选数量。报告新增实例配置缺口统计。
-
-本轮添加的测试：`tests/test_sdk_ast_bindings.py`、`tests/test_instance_identity.py` 和 `tests/test_html_dedup.py`。**尚未在当前环境执行完整仓库测试或真实业务仓库端到端验收**；CI 因账户额度问题不在本轮修改范围，使用者可在本地 JDK 8 环境执行现有 unittest。
-
-## 验证与限制
-
-- 当前支持 JDK 8 的静态分析；反射、动态代理、外部父 POM、真实数据源/缓存实例和跨服务部署关系仍可能无法解析。报告和索引均须披露未分析范围。
-- 真实 GitLab、Dubbo、MQ、数据库、Redis 关系及大规模扫描效果仍需按实际案例验收；不根据候选数量宣称准确率或提效比例。
-- 首期不构造预计合并树，不分析更早历史共同修改，不运行待分析项目构建或业务脚本，也不自动合并或发布。
+开发者可在完整 JDK 8 环境运行：
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m compileall -q diff_analysis tests
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ~~~
 
-当前以 **JDK 8** 为主要验证目标，不以 JDK 17/21 作为主工具运行要求。
-
-## 文档导航
-
-- [Windows 操作指南](docs/WINDOWS_SETUP.md)：安装、GitLab、JSON 请求和命令示例。
-- [当前管线与验收设计](docs/PIPELINE_V4.md)：阶段契约、覆盖预算、人工修订、后续目标；设计目标不能当作已完成能力。
-- [功能规格](specs/001-change-impact-review/spec.md)：行为约束与验收口径。
-- [CHANGELOG](CHANGELOG.md)：历史开发记录和决策，README 不再按日期堆叠状态。
+更多资料：[Windows 操作指南](docs/WINDOWS_SETUP.md) · [管线与验收设计](docs/PIPELINE_V4.md)（设计目标不等于已实现能力） · [功能规格](specs/001-change-impact-review/spec.md) · [历史记录](CHANGELOG.md) · [四阶段评审记录](docs/FOUR_STAGE_REVIEW.md)。
