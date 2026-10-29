@@ -136,6 +136,7 @@ class HumanReportTests(unittest.TestCase):
             specs = [(sdk, 'local/sdk', base, head), (consumer, 'local/consumer', cbase, chead)]
             ledgers = [final_diff_ledger(*x) for x in specs]
             result = analyze(specs, ledgers)
+            self.assertTrue(all(isinstance(gap, dict) and 'reason' in gap for gap in result['gaps']))
             self.assertTrue(any(x['kind'] == 'SDK消费者' and '旧版本' in x['reason'] for x in result['alerts']))
             self.assertFalse(any(x['kind'] == '变化类引用SDK' for x in result['alerts']))
             report = root / 'out'

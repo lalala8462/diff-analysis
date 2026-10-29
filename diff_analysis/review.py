@@ -2,7 +2,7 @@
 from collections import defaultdict
 from pathlib import Path
 from .gitops import check_sha, diff_files, diff_hunks, files_at
-from .scanner import scan_tree, method_changes, build_graph, callers_of
+from .scanner import scan_tree, scan_coverage, method_changes, build_graph, callers_of
 
 
 def version_of(root):
@@ -53,8 +53,6 @@ def review_repo(repo, project, base, head, workdir, cache, classpaths=None):
     new_reverse, new_unresolved = build_graph(new, calls)
     old_impact, old_limited = callers_of(changed, old_reverse)
     new_impact, new_limited = callers_of(changed, new_reverse)
-    # 兼容字段只复用某一侧的完整路径，不能跨版本拼接调用边。
-    impact = {**old_impact, **new_impact}
     api_changes = [f for f in changed_files if is_api_path(f['path']) or is_api_path(f['old_path'])]
     api_issues = []
     if api_changes:
@@ -68,20 +66,21 @@ def review_repo(repo, project, base, head, workdir, cache, classpaths=None):
         api_issues.append({'paths': [f['path'] for f in api_changes], 'status': status,
                            'old_version': old_v, 'new_version': new_v})
     return {'project': project, 'base': base, 'head': head,
+            'java_coverage': {
+                'BASE': {**scan_coverage(old_root, old, old_errors + (
+                    [{'reason': 'IMPACT_TRAVERSAL_LIMIT'}] if old_limited else []), skipped_old), 'sha': base},
+                'HEAD': {**scan_coverage(new_root, new, errors + (
+                    [{'reason': 'IMPACT_TRAVERSAL_LIMIT'}] if new_limited else []), skipped_new), 'sha': head}},
             'java_classpath': {
                 side: {'fingerprint': cp["fingerprint"],
                        'jar_count': cp["jar_count"], 'status': cp["status"]}
                 for side, cp in classpaths.items() if cp},
             'changed_files': changed_files, 'changed_methods': sorted(changed),
             'methods': new, 'old_methods': old, 'calls': calls, 'old_calls': old_calls,
-            'impact_paths': impact, 'old_impact_paths': old_impact,
+            'old_impact_paths': old_impact,
             'new_impact_paths': new_impact, 'unresolved': new_unresolved,
             'old_unresolved_count': len(old_unresolved), 'old_unresolved': old_unresolved,
-            'api_issues': api_issues,
-            'warnings': [*('old: ' + s for s in skipped_old), *('new: ' + s for s in skipped_new),
-                         *('old parse: ' + x['path'] for x in old_errors),
-                         *('new parse: ' + x['path'] for x in errors)] + (['impact traversal limit reached'] if old_limited or new_limited else []),
-            'incomplete': bool(skipped_old or skipped_new or old_errors or errors or old_limited or new_limited)}
+            'api_issues': api_issues}
 
 
 def stitch_cross_project(results):

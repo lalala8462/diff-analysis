@@ -42,14 +42,16 @@ def _review_sources(release, graphs, units=None):
             for side in ("BASE", "HEAD"):
                 sha = ledger["base" if side == "BASE" else "head"]
                 graph = graphs.get((ledger["project"], side, sha))
+                location = {'project': ledger['project'], 'sha': sha,
+                            'path': change.get('old_path' if side == 'BASE' else 'path')}
                 if graph is None:
-                    omissions.append({"unit_id": unit.get("id"), "side": side,
+                    omissions.append({**location, "unit_id": unit.get("id"), "side": side,
                                       "reason": "GRAPH_NOT_AVAILABLE"})
                     continue
                 range_key = "old_range" if side == "BASE" else "new_range"
                 region = unit.get(range_key)
                 if unit.get("range_basis") != "WHOLE_RAW_CHANGE" and not region:
-                    omissions.append({"unit_id": unit.get("id"), "side": side,
+                    omissions.append({**location, "unit_id": unit.get("id"), "side": side,
                                       "reason": "UNIT_RANGE_NOT_PROVEN"})
                     continue
                 if unit.get("range_basis") == "WHOLE_RAW_CHANGE":
@@ -63,7 +65,7 @@ def _review_sources(release, graphs, units=None):
                     if symbol in graph.get("method_index", {}):
                         sources[group].add(_node("method", side, ledger["project"], sha, symbol))
                     else:
-                        omissions.append({"unit_id": unit.get("id"), "side": side,
+                        omissions.append({**location, "unit_id": unit.get("id"), "side": side,
                                           "reason": "METHOD_NOT_INDEXED", "symbol": symbol})
     return sources, omissions
 
@@ -88,14 +90,16 @@ def build_unified_graph(release, binding_report=None, units=None):
     report = binding_report or {}
     for ep in report.get("endpoints", []):
         project, side, sha = ep["project"], ep["side"], ep["sha"]
+        location = {'project': project, 'sha': scope.get((project, side)), 'side': side,
+                    'path': ep.get('evidence', {}).get('path')}
         if scope.get((project, side)) != sha:
-            omissions.append({"endpoint_id": ep["id"], "reason": "ENDPOINT_SHA_MISMATCH"})
+            omissions.append({**location, "endpoint_id": ep["id"], "reason": "ENDPOINT_SHA_MISMATCH"})
             continue
         node = _node("endpoint", side, project, sha, ep["id"])
         endpoints[ep["id"]] = (ep, node)
         graph = graphs.get((project, side, sha))
         if not graph:
-            omissions.append({"endpoint_id": ep["id"], "reason": "ENDPOINT_METHOD_GRAPH_MISSING"})
+            omissions.append({**location, "endpoint_id": ep["id"], "reason": "ENDPOINT_METHOD_GRAPH_MISSING"})
             continue
         evidence = ep["evidence"]
         anchored = [(s, m) for s, m in graph.get("method_index", {}).items()
@@ -103,7 +107,7 @@ def build_unified_graph(release, binding_report=None, units=None):
                     _intersects({"start": evidence["start"],
                                  "count": evidence["end"] - evidence["start"] + 1}, m)]
         if len(anchored) != 1:
-            omissions.append({"endpoint_id": ep["id"],
+            omissions.append({**location, "endpoint_id": ep["id"],
                               "reason": ("ENDPOINT_METHOD_AMBIGUOUS" if anchored else
                                          "ENDPOINT_METHOD_NOT_LOCATED"),
                               "candidate_count": len(anchored)})
@@ -121,18 +125,21 @@ def build_unified_graph(release, binding_report=None, units=None):
             "evidence_ids": [ep["id"]],
             "binding_status": "PINNED_SOURCE_RANGE",
             "confidence": "CANDIDATE"})
+    owners = {ep['id']: ep['project'] for ep in report.get('endpoints', [])}
     for connection in report.get("edges", []):
+        location = {'producer_project': owners.get(connection['callee_endpoint']),
+                    'consumer_project': owners.get(connection['caller_endpoint'])}
         left = endpoints.get(connection["caller_endpoint"])
         right = endpoints.get(connection["callee_endpoint"])
         if not left or not right:
-            omissions.append({"connection_id": connection["id"],
+            omissions.append({**location, "connection_id": connection["id"],
                               "reason": "ENDPOINT_NOT_IN_BATCH"})
             continue
         caller, callee = left[0], right[0]
         if (caller["side"] != callee["side"] or caller["side"] != connection["side"] or
                 caller["sha"] != connection["caller_sha"] or
                 callee["sha"] != connection["callee_sha"]):
-            omissions.append({"connection_id": connection["id"],
+            omissions.append({**location, "connection_id": connection["id"],
                               "reason": "CROSS_SIDE_OR_SHA_MISMATCH"})
             continue
         status = connection.get("binding_status", "BINDING_UNCONFIRMED")

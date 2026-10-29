@@ -26,18 +26,24 @@ def _group_for_diff(release, state):
 def update_review_package(run_dir):
     root, release = load_batch(run_dir)
     state = _state(root)
-    original = json.loads((root / "questions.json").read_text("utf-8"))
+    from .coverage import refresh_coverage, question_coverage, _read
+    coverage = refresh_coverage(root, release)
+    original = json.loads((root / 'questions.json').read_text('utf-8'))
     source = root / "recomputed_latest.json"
     questions = (json.loads(source.read_text("utf-8"))["questions"]
                  if source.is_file() and state["group_revisions"] else original["questions"])
     unified_file = root / "unified_impact_latest.json"
-    unified = (json.loads(unified_file.read_text("utf-8"))
+    unified = (_read(root, unified_file.name)
                if unified_file.is_file() else {})
     resource_file = root / "resource_review_latest.json"
-    resource_review = (json.loads(resource_file.read_text("utf-8"))
+    resource_review = (_read(root, resource_file.name)
                        if resource_file.is_file() else {})
+    from .behavior_review import refresh_behavior_review
+    refresh_behavior_review(root, release)
+    behavior_file = root / 'behavior_review_latest.json'
+    behavior_review = json.loads(behavior_file.read_text('utf-8')) if behavior_file.is_file() else {}
     questions = (list(questions) + unified.get("questions", []) +
-                 resource_review.get("questions", []))
+                 resource_review.get("questions", []) + behavior_review.get('questions', []))
     group_resource = {
         gid: content.get("fingerprint")
         for gid, content in resource_review.get("groups", {}).items()}
@@ -52,18 +58,18 @@ def update_review_package(run_dir):
     superseded = {e["old_goal_id"] for e in state.get("goal_revision_events", [])}
     # Bind target changes to the exact review objects that cited them. An
     # unlinked new goal cannot invalidate every unrelated group.
-    goal_affected = set()
+    goal_affected = defaultdict(set)
     for decision in state["decisions"]:
         if decision.get("expected_goal_id") not in superseded:
             continue
         if decision["object_type"] == "GROUP":
-            goal_affected.add(decision["object_id"])
+            goal_affected[decision['expected_goal_id']].add(decision["object_id"])
         elif decision["object_type"] == "DIFF":
-            goal_affected.update(diff_owner.get(decision["object_id"], []))
+            goal_affected[decision['expected_goal_id']].update(diff_owner.get(decision["object_id"], []))
         elif decision["object_type"] == "QUESTION":
-            for q in original["questions"]:
+            for q in questions:
                 if q["id"] == decision["object_id"]:
-                    goal_affected.update(q.get("group_ids", []))
+                    goal_affected[decision['expected_goal_id']].update(q.get("group_ids", []))
     group_affected = (set(state["group_revisions"][-1]["affected_group_ids"])
                       if state["group_revisions"] else set())
     seen, dedup = set(), []
@@ -102,19 +108,31 @@ def update_review_package(run_dir):
     request_plan, updated, reused = [], 0, 0
     # 已失效的历史判断不会因再次生成相同问题包而恢复有效。
     decision_stale = list(previous.get("decisions_to_revalidate", []))
+    # 分组修订按判断身份继承失效，不比较生成时间。
+    for revision in state['group_revisions']:
+        decision_stale.extend(revision.get('decisions_needing_review', []))
     enriched = []
     for q in dedup:
         related = q.get("group_ids", [])
+        scope_question = {**q, 'change_ids': sorted(set(q.get('change_ids', [])) |
+                          {cid for g in related for cid in groups.get(g, [])})}
+        coverage_fingerprint = question_coverage(coverage, scope_question, changes)
+        evidence_fingerprint = _hash(sorted({_hash({
+            k: e.get(k) for k in ('sha256', 'project', 'sha', 'side', 'path', 'start', 'end')})
+            for e in supplements if e.get('question_id') == q['id']}))
         goal_refs = sorted((e["old_goal_id"], e["new_goal_id"]) for e in
                            state.get("goal_revision_events", [])
-                           if set(related) & goal_affected)
+                           if set(related) & goal_affected[e['old_goal_id']])
         membership = sorted((g, tuple(sorted(groups.get(g, []))),
                              sorted(group_units.get(g, []),
                                     key=lambda entry: (entry[0], entry[1])))
                             for g in related)
-        fingerprint = _hash([q["id"], q.get("change_ids"), related, membership,
+        fingerprint = _hash(['review-dependencies-v2', q["id"], q.get("change_ids"), related, membership,
+                             evidence_fingerprint, coverage_fingerprint,
                              goal_refs, q.get("path_edge_ids", []),
                              sorted((g, group_impact[g]) for g in related),
+                             q.get('behavior_fingerprint'),
+                             sorted((g, behavior_review.get('groups', {}).get(g, {}).get('fingerprint')) for g in related),
                              sorted((g, group_resource.get(g)) for g in related)])
         last = old.get(q["id"])
         unchanged = bool(last and last.get("dependency_fingerprint") == fingerprint)
@@ -123,6 +141,7 @@ def update_review_package(run_dir):
         else:
             updated += 1
         q = {**q, "dependency_fingerprint": fingerprint,
+             'evidence_fingerprint': evidence_fingerprint, 'coverage_fingerprint': coverage_fingerprint,
              "revision_status": "REUSED" if unchanged else "REVISED",
              "evidence_adequacy": "NOT_ASSESSED"}
         enriched.append(q)
@@ -146,7 +165,7 @@ def update_review_package(run_dir):
                                          "kind": "CONTRACT", "project": ledger["project"],
                                          "side": side, "sha": sha, "path": p,
                                          "status": "NEEDS_EVIDENCE_OR_REVIEW"})
-        if q.get("kind") == "RESOURCE_CONSUMER":
+        if q.get("kind") in ("RESOURCE_CONSUMER", 'BEHAVIOR_IMPACT'):
             for item in q.get("consumer_locations", [])[:30]:
                 path = item.get("path")
                 if isinstance(path, str):
@@ -176,6 +195,7 @@ def update_review_package(run_dir):
     group_fingerprints = {
         group: _hash([
             sorted(cids), sorted(group_units.get(group, [])),
+            question_coverage(coverage, {'change_ids': cids}, changes),
             sorted(group_impact[group]),
             group_resource.get(group),
             sorted((q["id"], q["dependency_fingerprint"])
@@ -189,29 +209,24 @@ def update_review_package(run_dir):
     for decision in state["decisions"]:
         if decision["object_type"] == "QUESTION":
             current = current_questions.get(decision["object_id"])
-            stored = decision.get("question_dependency_fingerprint")
+            stored = decision["question_dependency_fingerprint"]
             if current is None:
                 decision_stale.append(decision["id"])
-            elif stored is not None:
-                if stored != current["dependency_fingerprint"]:
-                    decision_stale.append(decision["id"])
-            elif current["revision_status"] == "REVISED":
-                # Legacy judgments lack per-question binding: conservative.
+            elif stored != current['dependency_fingerprint']:
                 decision_stale.append(decision["id"])
         elif (decision["object_type"] in object_fingerprints and
               decision["dimension"] in ("IMPACT", "CONFORMANCE")):
             obj, oid = decision["object_type"], decision["object_id"]
             current = object_fingerprints[obj].get(oid)
-            stored = decision.get("object_dependency_fingerprint")
-            if stored is None:
-                stored = previous.get("object_dependency_fingerprints", {}).get(
-                    obj, {}).get(oid)
-            if current is None or stored is None or stored != current:
+            stored = decision["object_dependency_fingerprint"]
+            if current is None or stored != current:
                 decision_stale.append(decision["id"])
         if decision.get("expected_goal_id") in superseded:
             decision_stale.append(decision["id"])
     result = {
         "schema_version": "review-package-v1",
+        'dependency_rules_version': 'review-dependencies-v2',
+        'coverage_ref': 'coverage_latest.json',
         "group_revision": (state["group_revisions"][-1]["revision"]
                            if state["group_revisions"] else None),
         "goal_revision_count": len(state.get("goal_revision_events", [])),

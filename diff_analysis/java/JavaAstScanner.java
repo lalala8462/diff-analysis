@@ -8,6 +8,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import java.util.regex.*;
 
 /** Java 8 compatible AST scanner. Parse only; never compile business code. */
 public final class JavaAstScanner {
@@ -25,10 +26,29 @@ public final class JavaAstScanner {
         return b.append('"').toString();
     }
 
-    static void emit(String kind, Map<String, String> fields, Map<String, Integer> nums) {
+    static String jsonValue(Object value) {
+        if (value == null) return "null";
+        if (value instanceof Number || value instanceof Boolean) return value.toString();
+        if (value instanceof Map) {
+            List<String> items = new ArrayList<String>();
+            for (Object item : ((Map<?, ?>)value).entrySet()) {
+                Map.Entry<?, ?> e = (Map.Entry<?, ?>)item;
+                items.add(json(e.getKey().toString()) + ":" + jsonValue(e.getValue()));
+            }
+            return "{" + String.join(",", items) + "}";
+        }
+        if (value instanceof Iterable) {
+            List<String> items = new ArrayList<String>();
+            for (Object item : (Iterable<?>)value) items.add(jsonValue(item));
+            return "[" + String.join(",", items) + "]";
+        }
+        return json(value.toString());
+    }
+
+    static void emit(String kind, Map<String, ?> fields, Map<String, Integer> nums) {
         StringBuilder b = new StringBuilder("{\"kind\":").append(json(kind));
-        for (Map.Entry<String, String> e : fields.entrySet())
-            b.append(',').append(json(e.getKey())).append(':').append(json(e.getValue()));
+        for (Map.Entry<String, ?> e : fields.entrySet())
+            b.append(',').append(json(e.getKey())).append(':').append(jsonValue(e.getValue()));
         for (Map.Entry<String, Integer> e : nums.entrySet())
             b.append(',').append(json(e.getKey())).append(':').append(e.getValue());
         System.out.println(b.append('}').toString());
@@ -79,17 +99,19 @@ public final class JavaAstScanner {
         final Elements elements;
         final String path;
         final String pkg;
+        final String scope;
         final Deque<String> classStack = new ArrayDeque<String>();
         final Deque<Map<String, String>> fieldTypes = new ArrayDeque<Map<String, String>>();
         Map<String, String> localTypes = new HashMap<String, String>();
         String owner = null;
 
-        Scanner(CompilationUnitTree unit, Trees trees, Elements elements, String path) {
+        Scanner(CompilationUnitTree unit, Trees trees, Elements elements, String path, String scope) {
             this.unit = unit;
             this.positions = trees.getSourcePositions();
             this.trees = trees;
             this.elements = elements;
             this.path = path;
+            this.scope = scope;
             this.pkg = unit.getPackageName() == null ? "" : unit.getPackageName().toString();
         }
 
@@ -142,9 +164,12 @@ public final class JavaAstScanner {
             String methodBinding = methodElement instanceof ExecutableElement
                 ? bindingId((ExecutableElement)methodElement, elements) : "";
             attrs.put("binding_id", methodBinding);
+            attrs.put("source_scope", scope);
             attrs.put("binding_status", methodBinding.isEmpty()
                 ? "ATTRIBUTION_UNAVAILABLE" : "JAVAC_ATTRIBUTED");
-            emit("method", attrs, ints("start", line(start), "end", line(Math.max(start, end - 1))));
+            Map<String, Object> methodFacts = new LinkedHashMap<String, Object>(attrs);
+            methodFacts.put("behavior", new BehaviorFacts(unit, trees, elements).method(tree));
+            emit("method", methodFacts, ints("start", line(start), "end", line(Math.max(start, end - 1))));
             super.visitMethod(tree, unused);
             owner = previousOwner;
             localTypes = previousTypes;
@@ -175,6 +200,7 @@ public final class JavaAstScanner {
                     ? bindingId((ExecutableElement)resolved, elements) : "";
                 Map<String, String> attrs = fields(
                     "path", path, "owner", owner, "name", name,
+                    "source_scope", scope,
                     "receiver", receiver, "receiver_type", type == null ? "" : type,
                     "target_binding_id", targetId,
                     "binding_status", targetId.isEmpty()
@@ -186,6 +212,26 @@ public final class JavaAstScanner {
         }
     }
 
+    private static Path sourceRoot(Path root, Path file, String source) {
+        String relative = root.relativize(file).toString().replace('\\', '/');
+        Matcher standard = Pattern.compile("^((?:.*?/)?src/(?:main|test)/java)(?:/|$)").matcher(relative);
+        if (standard.find()) return root.resolve(standard.group(1));
+        Matcher pkg = Pattern.compile("(?m)^\\s*package\\s+([\\w.]+)\\s*;").matcher(source);
+        Path parent = file.getParent();
+        if (pkg.find()) {
+            String suffix = pkg.group(1).replace('.', '/');
+            String folder = root.relativize(parent).toString().replace('\\', '/');
+            if (folder.equals(suffix) || folder.endsWith("/" + suffix)) {
+                for (String ignored : suffix.split("/")) parent = parent.getParent();
+                return parent;
+            }
+        }
+        // 非标准布局按最近的模块目录隔离，保持单文件包声明样例可用。
+        for (Path p = file.getParent(); p != null && p.startsWith(root); p = p.getParent())
+            if (Files.isRegularFile(p.resolve("pom.xml"))) return p;
+        return root;
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length != 1 && args.length != 2) {
             System.err.println("Usage: JavaAstScanner <source-root> [explicit-local-classpath]");
@@ -194,38 +240,52 @@ public final class JavaAstScanner {
         final Path root = Paths.get(args[0]).toAbsolutePath().normalize();
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         if (compiler == null) throw new IllegalStateException("JDK required (not JRE)");
+        Map<Path, List<Source>> scopes = new TreeMap<Path, List<Source>>();
         try (java.util.stream.Stream<Path> stream = Files.walk(root)) {
             for (Path file : (Iterable<Path>)stream.filter(
-                    p -> Files.isRegularFile(p) && p.toString().endsWith(".java"))::iterator) {
-                String rel = root.relativize(file).toString().replace('\\', '/');
+                    p -> Files.isRegularFile(p) && p.toString().endsWith(".java")).sorted()::iterator) {
+                String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
+                Path scope = sourceRoot(root, file, source);
+                if (!scopes.containsKey(scope)) scopes.put(scope, new ArrayList<Source>());
+                scopes.get(scope).add(new Source(file, source));
+            }
+        }
+        for (Map.Entry<Path, List<Source>> group : scopes.entrySet()) {
+                String rel = root.relativize(group.getKey()).toString().replace('\\', '/');
                 try {
-                    String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
                     StandardJavaFileManager manager = compiler.getStandardFileManager(
                         null, null, StandardCharsets.UTF_8);
                     try {
                         DiagnosticCollector<JavaFileObject> diagnostics =
                             new DiagnosticCollector<JavaFileObject>();
+                        List<Source> sources = new ArrayList<Source>(group.getValue());
+                        Set<java.net.URI> primary = new HashSet<java.net.URI>();
+                        for (Source s : group.getValue()) primary.add(s.toUri());
+                        if (rel.endsWith("src/test/java")) {
+                            Path main = group.getKey().getParent().getParent().resolve("main/java");
+                            if (scopes.containsKey(main)) sources.addAll(scopes.get(main));
+                        }
                         List<String> options = new ArrayList<String>(Arrays.asList(
                             "-proc:none", "-implicit:none", "-sourcepath",
-                            root.toString()));
-                        if (args.length == 2 && !args[1].isEmpty()) {
-                            options.add("-classpath");
-                            options.add(args[1]);
-                        }
+                            group.getKey().toString(), "-classpath",
+                            args.length == 2 ? args[1] : root.resolve(".no-implicit-classpath").toString()));
                         JavacTask task = (JavacTask)compiler.getTask(new StringWriter(),
                             manager, diagnostics, options, null,
-                            Arrays.asList(new Source(file, source)));
+                            sources);
                         Iterable<? extends CompilationUnitTree> units = task.parse();
                         try {
                             // Symbol attribution only. No generate(), no project build,
                             // no annotation processors or script execution.
                             task.analyze();
                         } catch (RuntimeException attributionFailure) {
-                            // Keep syntax-only evidence when external classpath is missing.
+                            emit("error", fields("path", rel, "error", "JAVAC_ANALYZE_FAILED"),
+                                 new LinkedHashMap<String, Integer>());
                         }
                         Trees trees = Trees.instance(task);
-                        for (CompilationUnitTree unit : units)
-                            new Scanner(unit, trees, task.getElements(), rel).scan(unit, null);
+                        for (CompilationUnitTree unit : units) if (primary.contains(unit.getSourceFile().toUri())) {
+                            String path = root.relativize(Paths.get(unit.getSourceFile().toUri())).toString().replace('\\', '/');
+                            new Scanner(unit, trees, task.getElements(), path, rel).scan(unit, null);
+                        }
                         int reported = 0;
                         int omitted = 0;
                         for (Diagnostic<? extends JavaFileObject> problem :
@@ -234,7 +294,9 @@ public final class JavaAstScanner {
                             if (reported >= 20) { omitted++; continue; }
                             String detail = problem.getMessage(Locale.ROOT);
                             if (detail.length() > 300) detail = detail.substring(0, 300);
-                            emit("error", fields("path", rel,
+                            String problemPath = problem.getSource() == null ? rel :
+                                root.relativize(Paths.get(problem.getSource().toUri())).toString().replace('\\', '/');
+                            emit("error", fields("path", problemPath,
                                  "error", "JAVAC_ATTRIBUTION_INCOMPLETE: " + detail),
                                  ints("line", (int)Math.max(0, problem.getLineNumber()),
                                       "column", (int)Math.max(0, problem.getColumnNumber())));
@@ -252,7 +314,6 @@ public final class JavaAstScanner {
                         ex.getClass().getSimpleName() + ": " + ex.getMessage()),
                         new LinkedHashMap<String, Integer>());
                 }
-            }
         }
     }
 }

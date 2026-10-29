@@ -8,6 +8,19 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 
+SCANNER_RULES = 'java-scopes-v2'
+
+
+def compatible_source_scope(caller, callee):
+    """源码方法只能使用所属编译范围，不把其他模块的同名实现视为绑定。"""
+    if any(not isinstance(m.get('source_scope'), str) for m in (caller, callee)):
+        raise ValueError('方法事实必须包含源码范围 source_scope')
+    left, right = caller['source_scope'], callee['source_scope']
+    return (left == right or
+            (left.endswith('src/test/java') and
+             right == left[:-len('test/java')] + 'main/java'))
+
+
 class ScannerError(RuntimeError):
     pass
 
@@ -62,14 +75,16 @@ def compile_scanner(cache, toolchain=None):
     cache = Path(cache)
     cache.mkdir(parents=True, exist_ok=True)
     source = Path(__file__).resolve().parent / "java" / "JavaAstScanner.java"
+    behavior_source = source.with_name("BehaviorFacts.java")
     target = cache / "JavaAstScanner.class"
     javac, _, tools = toolchain or java_toolchain()
-    if not target.exists() or target.stat().st_mtime < source.stat().st_mtime:
+    if (not target.exists() or not (cache / 'BehaviorFacts.class').exists()
+            or target.stat().st_mtime < max(source.stat().st_mtime, behavior_source.stat().st_mtime)):
         command = [javac, "-J-Dfile.encoding=UTF-8", "-encoding", "UTF-8",
                    "-source", "8", "-target", "8"]
         if tools is not None:
             command += ["-classpath", str(tools)]
-        command += ["-d", str(cache), str(source)]
+        command += ["-d", str(cache), str(source), str(behavior_source)]
         p = subprocess.run(command, capture_output=True, text=True,
                            encoding="utf-8", errors="replace")
         if p.returncode:
@@ -94,15 +109,46 @@ def scan_tree(root, cache, classpath=None):
     if p.returncode:
         raise ScannerError("Java parser failed: " + p.stderr[:1500])
     methods, calls, errors = {}, [], []
+    duplicates = set()
     for line in p.stdout.splitlines():
         event = json.loads(line)
         if event["kind"] == "method":
-            methods[event["symbol"]] = event
+            symbol = event['symbol']
+            if symbol in methods or symbol in duplicates:
+                first = methods.pop(symbol, None)
+                duplicates.add(symbol)
+                for item in ([first] if first else []) + [event]:
+                    errors.append({'kind': 'error', 'path': item['path'], 'symbol': symbol,
+                                   'reason': 'DUPLICATE_METHOD_SYMBOL',
+                                   'error': 'DUPLICATE_METHOD_SYMBOL'})
+            else:
+                methods[symbol] = event
         elif event["kind"] == "call":
             calls.append(event)
         else:
             errors.append(event)
+    if not methods and not errors and any(Path(root).rglob('*.java')):
+        errors.append({'kind': 'error', 'path': '', 'reason': 'EMPTY_METHOD_FACTS',
+                       'error': '存在 Java 源码但没有可用方法事实'})
     return methods, calls, errors
+
+
+def scan_coverage(root, methods, errors, skipped=()):
+    """方法事实和诊断共同构成可复用扫描结果，空字典不代表扫描成功。"""
+    diagnostics = [{'reason': e.get('reason', 'JAVA_ATTRIBUTION_INCOMPLETE'), **e} for e in errors]
+    diagnostics += [{'reason': 'SOURCE_SKIPPED', 'path': s.split(' (', 1)[0], 'detail': s}
+                    for s in skipped]
+    paths = {p.relative_to(root).as_posix() for p in Path(root).rglob('*.java')}
+    skipped_paths = {s.split(' (', 1)[0] for s in skipped if s.split(' (', 1)[0].endswith('.java')}
+    files = []
+    for path in sorted(paths | skipped_paths):
+        gaps = [d for d in diagnostics if not d.get('path') or d['path'] == path or
+                path.startswith(d['path'].rstrip('/') + '/')]
+        files.append({'path': path, 'status': 'PARTIAL' if gaps else 'COMPLETE', 'diagnostics': gaps})
+    return {'rules_version': SCANNER_RULES,
+            'status': 'PARTIAL' if diagnostics else 'COMPLETE',
+            'java_file_count': len(paths), 'files': files,
+            'method_count': len(methods), 'diagnostics': diagnostics}
 
 
 def method_changes(old_methods, new_methods, hunks_by_path):
@@ -157,7 +203,8 @@ def build_graph(methods, calls):
             potentials = by_class_simple[(simple, name)]
         else:
             potentials = []
-        candidates = [x for x in potentials if int(methods[x]["arity"]) == arity]
+        candidates = [x for x in potentials if int(methods[x]["arity"]) == arity
+                      and compatible_source_scope(methods[owner], methods[x])]
         if len(candidates) == 1:
             reverse[candidates[0]].add(owner)
         else:

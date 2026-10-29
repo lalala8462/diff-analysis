@@ -269,6 +269,7 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         codetracker_evidence=codetracker_evidence,
         attribution_rules=attribution_rules,
         precomputed_ledgers=manifest["ledgers"] if manifest is not None else None)
+    release['java_coverage'] = {r['project']: r['java_coverage'] for r in reviews if 'java_coverage' in r}
     if comparisons is not None:
         release['comparisons'] = comparisons
     scan_failures = list(scan_failures or [])
@@ -288,7 +289,7 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                 "static_scan": ("NOT_RUN" if row["git_ledger"] == "FAILED"
                     else "SKIPPED" if failures.get(key, {}).get("error_type") == "NOT_RERUN"
                     else "FAILED" if key in failures
-                    else "PARTIAL" if review and review.get("incomplete")
+                    else "PARTIAL" if review and any(s['status'] != 'COMPLETE' for s in review['java_coverage'].values())
                     else "COMPLETED" if review else "NOT_RUN")})
         release["stage_failures"] = manifest["failures"] + scan_failures
         if not manifest["ledgers"]:
@@ -530,22 +531,30 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
             json.dumps(shared, ensure_ascii=False, indent=2), encoding='utf-8')
         from .resource_review import refresh_resource_review
         resource_summary = refresh_resource_review(root, release)
+        from .behavior_review import refresh_behavior_review
+        behavior_summary = refresh_behavior_review(root, release)
         # The initial review package was built before report enrichment; refresh
         # it now so resource questions and fingerprints are present immediately.
         from .revision_pipeline import update_review_package
         refreshed_review = update_review_package(root)
         resource_summary["review_questions"] = refreshed_review["questions"]
         with (root / 'report.md').open('a', encoding='utf-8') as handle:
+            behavior = dependency_scope.get('behavior', {})
+            handle.write('\n## 行为影响候选\n\n状态：%s；%d 项候选。事实见 [behavior_impact_latest.json](behavior_impact_latest.json)，'
+                         '审核归属见 [behavior_review_latest.json](behavior_review_latest.json)。\n' %
+                         (behavior.get('status', 'NOT_EXECUTED'), len(behavior.get('candidates', []))))
             handle.write('\n## 跨资源静态影响候选\n\n')
             handle.write('资源归组见 [resource_impact_latest.json](resource_impact_latest.json)；'
                          '人工修订归属见 [resource_review_latest.json](resource_review_latest.json)。'
                          '同名不能确认运行时数据库、Redis 或 Spring/反射绑定。\n')
         with (root / 'ai_review.md').open('a', encoding='utf-8') as handle:
+            handle.write('\n## 行为影响候选\n\n行为事实见 behavior_impact_latest.json；按分组复核问题见 behavior_review_latest.json。触发路径及语义映射仍需核实。\n')
             handle.write('\n## 固定版本资源关联\n\n'
                          '资源候选与覆盖缺口见 resource_impact_latest.json；'
                          '按人工分组复核的问题见 resource_review_latest.json。'
                          '不得将静态名称匹配当成真实部署或缺陷。\n')
         scope_summary = {'projects': dependency_scope['projects'], 'gaps': dependency_scope['gaps'],
+                         'coverage_rules_version': dependency_scope.get('coverage_rules_version'),
                          'sdk_candidates': len(dependency_scope['sdks']),
                          'alerts': len(dependency_scope['alerts']),
                          'table_candidates': len(database.get('impacts', [])),
@@ -556,10 +565,17 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
                          'resource_group_count': dependency_scope.get('resource_group_count', 0),
                          'resource_candidate_count': dependency_scope.get('resource_candidate_count', 0),
                          'resource_review': resource_summary,
+                         'behavior_review': behavior_summary,
+                         'behavior_status': dependency_scope.get('behavior', {}).get('status', 'NOT_EXECUTED'),
+                         'behavior_gaps': len(dependency_scope.get('behavior', {}).get('omissions', [])),
                          'human_priority_count': dependency_scope['human_priority_count']}
         (root / 'dependency_scope.json').write_text(
             json.dumps(scope_summary, ensure_ascii=False, indent=2), encoding='utf-8')
         if manifest is not None:
+            stage_manifest['behavior_scan'] = {'status': scope_summary['behavior_status'],
+                                               'gap_count': scope_summary['behavior_gaps'],
+                                               'output_ref': 'behavior_impact_latest.json'}
+            stage_manifest['report_stage']['output_refs'].extend(['behavior_impact_latest.json', 'behavior_review_latest.json'])
             stage_manifest["report_stage"]["output_refs"].extend(['report.html', 'dependency_scope.json', 'database_impact_latest.json',
                                                             'shared_resource_latest.json', 'resource_impact_latest.json',
                                                             'resource_review_latest.json', 'instance_scope_latest.json'])
@@ -572,14 +588,61 @@ def write_release_bundle(specs, reviews, cross_candidates, run_root, db=None,
         failure = {"project": "(batch)", "stage": "HUMAN_HTML",
                    "error_type": type(exc).__name__, "reason": str(exc)[:500]}
         release.setdefault("stage_failures", []).append(failure)
-        release["status"] = "PARTIAL_EVIDENCE"
+        if release['status'] != 'FAILED_GIT_LEDGER':
+            release["status"] = "PARTIAL_EVIDENCE"
         (root / "analysis.json").write_text(json.dumps(release, ensure_ascii=False, indent=2), encoding="utf-8")
         if manifest is not None:
             stage_manifest["failures"] = release["stage_failures"]
             stage_manifest["state"] = "PARTIAL"
 
-    if manifest is not None:
-        stage_manifest["report_stage"]["status"] = "PARTIAL" if any(f.get('stage') == 'HUMAN_HTML' for f in release.get('stage_failures', [])) else "COMPLETE"
+    # 所有退出路径都汇总覆盖；报告生成成功不会覆盖分析失败。
+    from .coverage import refresh_coverage
+    if (root / 'questions.json').is_file():
+        try:
+            from .revision_pipeline import update_review_package
+            update_review_package(root)
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+            release.setdefault('stage_failures', []).append({
+                'project': '(batch)', 'stage': 'REVIEW_REFRESH',
+                'error_type': type(exc).__name__, 'reason': str(exc)[:500]})
+    report_status = 'PARTIAL' if any(f.get('stage') in ('HUMAN_HTML', 'REVIEW_REFRESH', 'REVIEW_QUESTIONS')
+                                   for f in release.get('stage_failures', [])) else 'COMPLETE'
+    release['report_generation'] = {'status': report_status}
+    coverage = refresh_coverage(root, release, report_status=report_status)
+    release['coverage'] = {'status': coverage['status'], 'output_ref': 'coverage_latest.json'}
+    for name, stage in coverage['stages'].items():
+        if stage['status'] == 'FAILED' and name != 'report':
+            failure = {'project': '(batch)', 'stage': name.upper(), 'error_type': 'ANALYSIS_STAGE_FAILED',
+                       'reason': '详见 coverage_latest.json 中的阶段诊断'}
+            if not any(f.get('stage') == failure['stage'] for f in release.get('stage_failures', [])):
+                release.setdefault('stage_failures', []).append(failure)
+    if coverage['status'] == 'FAILED':
+        release['status'] = 'FAILED_GIT_LEDGER'
+    elif (coverage['status'] != 'COMPLETE' or report_status != 'COMPLETE') and release['status'] != 'FAILED_GIT_LEDGER':
+        release['status'] = 'PARTIAL_EVIDENCE'
+    final_json = root / 'analysis.final.tmp'
+    final_json.write_text(json.dumps(release, ensure_ascii=False, indent=2), encoding='utf-8')
+    final_json.replace(root / 'analysis.json')
+    for filename in ('report.md', 'ai_review.md'):
+        with (root / filename).open('a', encoding='utf-8') as handle:
+            handle.write('\n## 统一分析覆盖\n\n总状态：%s；详情见 [coverage_latest.json](coverage_latest.json)。\n' % coverage['status'])
+            for name, stage in coverage['stages'].items():
+                handle.write('- %s：%s\n' % (name, stage['status']))
+    if manifest is None:
+        stage_manifest = {'schema_version': 'analysis-stages-v1', 'run_id': run_id,
+                          'projects': release.get('project_phase_status', []),
+                          'report_stage': {'output_refs': ['analysis.json', 'report.md', 'ai_review.md']}}
+        path, temp = root / 'stage_manifest.json', root / 'stage_manifest.tmp'
+    if stage_manifest:
+        stage_manifest['state'] = 'FAILED' if release['status'] == 'FAILED_GIT_LEDGER' else 'PARTIAL' if release['status'] == 'PARTIAL_EVIDENCE' else 'COMPLETE'
+        stage_manifest['coverage'] = release['coverage']
+        stage_manifest['failures'] = release.get('stage_failures', [])
+        stage_manifest['analysis_stages'] = {name: stage['status'] for name, stage in coverage['stages'].items() if name != 'report'}
+        stage_manifest['behavior_scan'] = {'status': coverage['stages']['behavior']['status'],
+                                          'output_ref': 'behavior_impact_latest.json'}
+        stage_manifest['dependency_scan'] = {'status': coverage['stages']['maven_sdk']['status'],
+                                            'output_ref': 'dependency_scope.json'}
+        stage_manifest["report_stage"]["status"] = report_status
         stage_manifest["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
         temp.write_text(json.dumps(stage_manifest, ensure_ascii=False, indent=2),
                         encoding="utf-8")

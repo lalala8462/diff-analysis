@@ -3,7 +3,7 @@ import unittest
 from diff_analysis.query_contract import (
     _column_change_assessment, _external_sort_capability,
     _sort_parameter_capability, caller_sort_evidence, controller_endpoints,
-    mapper_callers, mapper_declaration, projection, projection_details,
+    mapper_callers, mapper_declaration, projection_details,
     scan_references, selects, sort_input_influence)
 
 
@@ -17,8 +17,8 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual('MEDIUM', sort_input_influence([])['level'])
 
     def test_columns(self):
-        cols, gaps = projection("SELECT id, state, SUM(total) AS amount FROM reco_record")
-        self.assertEqual(cols, ["amount", "id", "state"])
+        items, gaps = projection_details("SELECT id, state, SUM(total) AS amount FROM reco_record")
+        self.assertEqual(sorted(item['output'] for item in items), ["amount", "id", "state"])
         self.assertEqual(gaps, [])
 
     def test_mapper(self):
@@ -36,12 +36,14 @@ class QueryContractTests(unittest.TestCase):
     def test_nested_from_and_function_commas(self):
         sql = ("SELECT (SELECT max(v) FROM inner_t) AS state, "
                "concat(a, b) AS label, id FROM outer_t")
-        self.assertEqual(projection(sql), (["id", "label", "state"], []))
+        items, gaps = projection_details(sql)
+        self.assertEqual(sorted(item['output'] for item in items), ["id", "label", "state"])
+        self.assertEqual([], gaps)
 
     def test_non_projected_column_is_not_sql_failure_proof(self):
-        old, _ = projection("SELECT state, id FROM records")
-        new, gaps = projection("SELECT id FROM records ORDER BY state DESC")
-        self.assertEqual(set(old) - set(new), {"state"})
+        old, _ = projection_details("SELECT state, id FROM records")
+        new, gaps = projection_details("SELECT id FROM records ORDER BY state DESC")
+        self.assertEqual({i['output'] for i in old} - {i['output'] for i in new}, {"state"})
         self.assertEqual(gaps, [])
 
     def test_expression_without_alias_is_uncertain(self):
@@ -53,8 +55,8 @@ class QueryContractTests(unittest.TestCase):
             "CASE WHEN ok THEN CASE WHEN ready THEN 1 ELSE 0 END ELSE 0 END"]
         for expression in expressions:
             with self.subTest(expression=expression):
-                columns, gaps = projection('SELECT id, ' + expression + ' FROM t')
-                self.assertEqual(['id'], columns)
+                items, gaps = projection_details('SELECT id, ' + expression + ' FROM t')
+                self.assertEqual(['id'], [i['output'] for i in items])
                 self.assertIn('WILDCARD_OR_COMPLEX_EXPRESSION', gaps)
 
     def test_case_expression_with_alias_keeps_output_and_expression(self):
@@ -72,9 +74,9 @@ class QueryContractTests(unittest.TestCase):
         self.assertEqual(len(scan_references(code, "Svc.java", "state")), 1)
 
     def test_implicit_alias(self):
-        self.assertEqual(
-            projection("SELECT state stateAlias, id FROM records"),
-            (["id", "statealias"], []))
+        items, gaps = projection_details("SELECT state stateAlias, id FROM records")
+        self.assertEqual(["id", "statealias"], sorted(i['output'] for i in items))
+        self.assertEqual([], gaps)
 
     def test_projection_metadata_and_alias_rename_assessment(self):
         old_items, old_gaps = projection_details(

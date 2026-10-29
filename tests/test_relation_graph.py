@@ -6,7 +6,7 @@ from diff_analysis.relation_graph import side_graph, propagate_impacts, analyze_
 
 def method(name):
     return {"class": "com.demo.Pay", "name": name, "arity": 0,
-            "path": "Pay.java", "start": 1, "end": 9}
+            "path": "Pay.java", "start": 1, "end": 9, 'source_scope': ''}
 
 
 def call(owner, callee, line):
@@ -32,7 +32,7 @@ def review():
         "calls": [call(A, B, 4), call(C, B, 7),
                   call(D, A, 5), call(D, C, 6)],
         "old_unresolved": [], "unresolved": [],
-        "incomplete": False
+        'java_coverage': {side: {'status': 'COMPLETE', 'diagnostics': []} for side in ('BASE', 'HEAD')}
     }
 
 

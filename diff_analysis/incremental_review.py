@@ -82,7 +82,9 @@ def recompute_review(run_dir):
     root, release = load_batch(run_dir)
     state = _state(root)
     if not state["group_revisions"]:
-        raise ValueError("Run has no manual grouping revisions")
+        from .revision_pipeline import update_review_package
+        package = update_review_package(root)
+        return {'revision': None, 'review_package': package, 'coverage_ref': 'coverage_latest.json'}
     revision = state["group_revisions"][-1]
     revnum = revision["revision"]
     by_diff = revision["units"]

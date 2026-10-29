@@ -10,7 +10,8 @@ from diff_analysis.human_report import write_html
 
 class DedupHtmlTests(unittest.TestCase):
     def test_coverage_section_follows_all_main_report_sections(self):
-        scoped = {'sdks': [], 'alerts': [], 'projects': [], 'gaps': ['登记范围缺口'],
+        scoped = {'sdks': [], 'alerts': [], 'projects': [],
+                  'gaps': [{'reason': 'REGISTRY_GAP', 'detail': '登记范围缺口'}],
                   'shared_resources': {'impacts': [], 'omissions': [{'reason': '测试缺口'}]}}
         with tempfile.TemporaryDirectory() as d, patch(
                 'diff_analysis.human_report.analyze') as analyze:

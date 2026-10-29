@@ -190,6 +190,12 @@ def _state(root):
     data = json.loads(target.read_text(encoding="utf-8"))
     if data.get("schema_version") != "review-state-v1":
         raise ValueError("Unsupported review state")
+    for decision in data['decisions']:
+        field = ('question_dependency_fingerprint' if decision['object_type'] == 'QUESTION' else
+                 'object_dependency_fingerprint' if decision['object_type'] in ('GROUP', 'DIFF') and
+                 decision['dimension'] in ('IMPACT', 'CONFORMANCE') else None)
+        if field and not isinstance(decision.get(field), str):
+            raise ValueError('审核判断缺少当前格式的依赖指纹：' + decision['id'])
     return data
 
 
@@ -304,10 +310,15 @@ def import_review(run_dir, payload):
         question_fingerprint = next((
             q.get("dependency_fingerprint") for q in questions["questions"]
             if obj == "QUESTION" and q["id"] == oid), None)
+        object_fingerprint = object_fingerprints.get(obj, {}).get(oid)
+        fingerprint = (question_fingerprint if obj == 'QUESTION' else
+                       object_fingerprint if obj in ('GROUP', 'DIFF') and dim in ('IMPACT', 'CONFORMANCE') else '')
+        if not isinstance(fingerprint, str):
+            raise ValueError('审核对象缺少当前依赖范围，不能写入判断：' + oid)
         planned_decisions.append({
             **item, "id": did, "created_at_utc": _utc(),
             "question_dependency_fingerprint": question_fingerprint,
-            "object_dependency_fingerprint": object_fingerprints.get(obj, {}).get(oid),
+            "object_dependency_fingerprint": object_fingerprint,
             "scope_fingerprint": current_scope_fingerprint,
             "structural_check": "REFERENCES_VALID",
             "basis_check": "NOT_REVIEWED",
@@ -497,4 +508,6 @@ def supplement(run_dir, request, repos, max_total_bytes=1_000_000, max_rounds=3)
     _write_json(root / "supplement_state.json", state)
     refresh_evidence_manifest(root, state)
     _write_json(store / ("round-%03d.json" % state["rounds"]), outcome)
+    from .revision_pipeline import update_review_package
+    update_review_package(root)
     return outcome

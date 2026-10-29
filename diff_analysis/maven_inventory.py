@@ -160,13 +160,13 @@ def registry(path, specs):
                     repo = isolated[0][0]
                 entries[project] = {'repo': repo.resolve(), 'base': None, 'head': sha, 'source': '登记固定版本'}
             except (OSError, ValueError, RuntimeError) as exc:
-                gaps.append(project + '：登记版本不可读取：' + str(exc))
+                gaps.append({'project': project, 'reason': 'REGISTRY_REVISION_UNREADABLE', 'detail': str(exc)})
     elif not defaults and not gaps:
-        gaps.append('未提供登记清单；只检查本次比较项目。未登记项目未扫描。')
+        gaps.append({'reason': 'REGISTRY_NOT_CONFIGURED', 'detail': '未提供登记清单；只检查本次比较项目。未登记项目未扫描。'})
     return entries, gaps
 
 
-def analyze(specs, ledgers, manifest=None):
+def analyze(specs, ledgers, manifest=None, reviews=None):
     entries, gaps = registry(manifest, specs)
     snapshots = {}
     for project, item in entries.items():
@@ -177,11 +177,14 @@ def analyze(specs, ledgers, manifest=None):
                 continue
             try:
                 snapshots[project][side] = inventory(item['repo'], sha)
-                gaps.extend(project + ' ' + side + '：' + x for x in snapshots[project][side]['errors'])
+                gaps.extend({'project': project, 'side': side.upper(), 'sha': sha,
+                             'reason': 'POM_PARSE_FAILED', 'detail': x} for x in snapshots[project][side]['errors'])
                 if not snapshots[project][side]['modules']:
-                    gaps.append(project + ' ' + side + '：未发现可读取的 Maven POM；无法检查 Maven 依赖')
+                    gaps.append({'project': project, 'side': side.upper(), 'sha': sha,
+                                 'reason': 'POM_NOT_FOUND', 'detail': '未发现可读取的 Maven POM；无法检查 Maven 依赖'})
             except (OSError, RuntimeError, ValueError) as exc:
-                gaps.append(project + ' ' + side + '：POM 扫描失败：' + str(exc))
+                gaps.append({'project': project, 'side': side.upper(), 'sha': sha,
+                             'reason': 'POM_SCAN_FAILED', 'detail': str(exc)})
     led_by_project = {x['project']: x for x in ledgers}
     sdks, alerts = [], []
     for project, sides in snapshots.items():
@@ -217,13 +220,15 @@ def analyze(specs, ledgers, manifest=None):
                 if path.endswith('.java')})
             sdks.append(sdk)
             if not sdk['group'] or not sdk['artifact']:
-                gaps.append(project + ' / ' + module['path'] + '：SDK 坐标不完整，无法匹配消费者')
+                gaps.append({'project': project, 'path': module['path'], 'reason': 'SDK_COORDINATES_UNKNOWN',
+                             'detail': 'SDK 坐标不完整，无法匹配消费者'})
                 continue
             if sdk['old_version'] and sdk['new_version'] and sdk['old_version'] == sdk['new_version']:
                 alerts.append({'kind': 'SDK自身版本', 'reason': 'SDK 源码或 POM 发生变化而版本未变，消费者可能无法通过版本区分本次发布；需核对实际契约变化和发布安排。', 'sdk': sdk})
             version_changed = bool(sdk['old_version'] and sdk['new_version'] and sdk['old_version'] != sdk['new_version'])
             if not sdk['old_version'] or not sdk['new_version']:
-                gaps.append(project + ' / ' + module['path'] + '：本次 SDK 版本变化无法确定，未进行消费者版本对照')
+                gaps.append({'project': project, 'path': module['path'], 'reason': 'SDK_VERSION_UNKNOWN',
+                             'detail': '本次 SDK 版本变化无法确定，未进行消费者版本对照'})
             for consumer, csides in snapshots.items():
                 if consumer == project:
                     continue
@@ -233,7 +238,8 @@ def analyze(specs, ledgers, manifest=None):
                 before, after = deps('base'), deps('head')
                 unresolved = [d for m in csides.get('head', {}).get('modules', []) for d in m['dependencies'] if not d['group'] or not d['artifact']]
                 if unresolved:
-                    gaps.append(consumer + '：存在无法解析坐标的依赖，可能遗漏 SDK 引用')
+                    gaps.append({'project': consumer, 'side': 'HEAD', 'sha': entries[consumer]['head'],
+                                 'reason': 'DEPENDENCY_COORDINATES_UNKNOWN', 'detail': '存在无法解析坐标的依赖，可能遗漏 SDK 引用'})
                 if not before and not after:
                     continue
                 for dep in (after or before) if version_changed else []:
@@ -262,7 +268,8 @@ def analyze(specs, ledgers, manifest=None):
         for side, inv in sides.items():
             for m in inv['modules']:
                 if m['parent_unresolved']:
-                    gaps.append(project + ' ' + side + ' / ' + m['path'] + '：外部或无法解析的父 POM')
+                    gaps.append({'project': project, 'side': side.upper(), 'sha': entries[project][side],
+                                 'path': m['path'], 'reason': 'PARENT_POM_UNRESOLVED', 'detail': '外部或无法解析的父 POM'})
     # Cross-project table use is independent of Maven dependencies; keep it
     # in its own versioned inventory, alongside the dependency report scope.
     database = analyze_table_impacts(
@@ -284,14 +291,24 @@ def analyze(specs, ledgers, manifest=None):
     contract = analyze_contract_uses(
         sdks, entries, snapshots, ledgers,
         Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'sdk_contract_source')
-    gaps.extend('SDK contract: ' + json.dumps(item, ensure_ascii=False)
-                for item in contract['gaps'])
-    return {'sdks': sdks, 'alerts': alerts,
+    gaps.extend(contract['gaps'])
+    from .behavior_analysis import analyze_behavior
+    try:
+        behavior = analyze_behavior(
+            entries, ledgers, Path(__file__).resolve().parent.parent / '.diff-analysis' / 'cache' / 'behavior',
+            manifest=manifest, reviews=reviews, database=database, shared=shared)
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+        from .behavior_analysis import RULES_VERSION
+        behavior = {'schema_version': 'behavior-impact-v1', 'rules_version': RULES_VERSION,
+                    'status': 'FAILED', 'candidates': [],
+                    'omissions': [{'reason': 'BEHAVIOR_STAGE_FAILED', 'detail': str(exc)[:300]}]}
+    return {'sdks': sdks, 'alerts': alerts, 'coverage_rules_version': 'maven-sdk-declarations-v1',
             'contract_changes': contract['changes'],
             'contract_impacts': contract['impacts'],
             'database': database, 'query_contract': query_contract,
             'external_influence': external_influence, 'shared_resources': shared,
             'instance_scope': instance_scope,
-            'gaps': sorted(set(gaps)),
+            'behavior': behavior,
+            'gaps': [value for _, value in sorted({json.dumps(g, ensure_ascii=False, sort_keys=True): g for g in gaps}.items())],
             'projects': [{'project': p, 'base': i['base'], 'head': i['head'], 'source': i['source'],
                           'branch': i.get('branch')} for p, i in entries.items()]}

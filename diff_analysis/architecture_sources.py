@@ -168,7 +168,7 @@ def default_projects(specs, workspace=WORKSPACE, copies=COPIES):
     try:
         names = project_names(workspace)
     except (OSError, IndexError, SourceError) as exc:
-        return [], ['无法读取架构项目清单：' + str(exc)[:200]]
+        return [], [{'reason': 'PROJECT_LIST_UNREADABLE', 'detail': '无法读取架构项目清单：' + str(exc)[:200]}]
     selected = set(_matching_names(specs, names, workspace, copies))
     def scan(name):
         if name in selected:
@@ -195,7 +195,8 @@ def default_projects(specs, workspace=WORKSPACE, copies=COPIES):
             return {'project': 'architecture/' + name, 'repo': target, 'base': None,
                     'head': sha, 'source': '远端默认分支', 'branch': branch.removeprefix('refs/heads/')}, None
         except (OSError, SourceError) as exc:
-            return None, name + '：默认分支扫描准备失败：' + str(exc)
+            return None, {'project': 'architecture/' + name, 'reason': 'DEFAULT_BRANCH_PREPARE_FAILED',
+                          'detail': str(exc)}
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(scan, names))
     return [x for x, _ in results if x], [e for _, e in results if e]

@@ -377,7 +377,14 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
     filtered_ledgers = [{**ledger, 'final_changes': [c for c in ledger['final_changes'] if c['id'] not in ignored]}
                         for ledger in release['ledgers']]
     # 已保存的固定版本事实可用于页面重绘，默认入口仍执行完整分析。
-    sdk = dependency_scope if dependency_scope is not None else analyze(specs, filtered_ledgers, manifest)
+    sdk = dependency_scope if dependency_scope is not None else analyze(specs, filtered_ledgers, manifest, reviews=reviews)
+    from .coverage import refresh_coverage, DEPENDENCY_ARTIFACTS
+    for key, filename in DEPENDENCY_ARTIFACTS.items():
+        if key in sdk:
+            _write_json(root / filename, sdk[key])
+    _write_json(root / 'dependency_scope.json', {
+        key: sdk.get(key) for key in ('projects', 'gaps', 'coverage_rules_version')})
+    coverage = refresh_coverage(root, release, dependency_scope=sdk)
     reviewmap = {r['project']: r for r in reviews}
     allfiles, tickets = [], set()
     for ledger in filtered_ledgers:
@@ -450,8 +457,40 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
     for candidate in unified_resources['candidates']:
         key = (candidate['producer_project'], candidate['consumer_project'])
         resource_groups[key].append(candidate)
+    behavior = sdk.get('behavior', {'status': 'UNKNOWN', 'candidates': [], 'omissions': []})
+    _write_json(root / 'behavior_impact_latest.json', behavior)
+    from .behavior_review import group_behavior_cards, render_behavior
+    behavior_groups = group_behavior_cards(behavior.get('candidates', []))
+    attached_behavior = set()
+    for group in behavior_groups:
+        for queries in query_groups.values():
+            query = queries[0]
+            mapper = query['namespace'] + '#' + query['select_id']
+            if any(item['producer_project'] == query['project'] and
+                   set(item['change_ids']) & set(query.get('change_ids', [])) and
+                   mapper in (item['source_symbol'], item['consumer_symbol'],
+                              item.get('evidence', {}).get('read', {}).get('mapper')) for item in group):
+                query.setdefault('behavior_candidates', []).extend(group)
+                attached_behavior.update(item['id'] for item in group)
+                break
+        if all(item['id'] in attached_behavior for item in group):
+            continue
+        for resources in resource_groups.values():
+            for resource in resources:
+                if any(item.get('relation') == 'SHARED_RESOURCE' and
+                       item['producer_project'] == resource['producer_project'] and
+                       item['consumer_project'] == resource['consumer_project'] and
+                       item['resource'].partition('#')[0] == resource['resource'] and
+                       set(item['change_ids']) & set(resource['change_ids']) for item in group):
+                    resource.setdefault('behavior_candidates', []).extend(group)
+                    attached_behavior.update(item['id'] for item in group)
+                    break
+            if all(item['id'] in attached_behavior for item in group):
+                break
+    standalone_behavior = [[i for i in group if i['id'] not in attached_behavior] for group in behavior_groups]
+    standalone_behavior = [g for g in standalone_behavior if g]
     sdk['human_priority_count'] = (len(alerts) + len(resource_groups) +
-                                   len(query_groups) + len(external_groups))
+                                   len(query_groups) + len(external_groups) + len(standalone_behavior))
     sdk['resource_group_count'] = len(resource_groups)
     sdk['resource_candidate_count'] = len(unified_resources['candidates'])
     out = ['<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>版本差异审核</title><style>', STYLE, '</style></head><body><header><h1>版本差异审核</h1><div>固定版本最终净差异 · 静态候选需人工确认 · 不代表实际部署</div></header><main>']
@@ -547,6 +586,8 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
         out.append('<p class="gap">待确认：上述旧字段在当前数据库及最终生成的 SQL 中能否继续合法排序。</p>')
         out.append('</details>')
         if index == len(candidates) - 1:
+            if candidates[0].get('behavior_candidates'):
+                out.append(render_behavior(candidates[0]['behavior_candidates']))
             out.append('</article>')
     for group, index, candidate in ((items, n, item) for items in external_groups.values()
                                      for n, item in enumerate(items)):
@@ -713,8 +754,12 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
                                 esc(use.get('datasource_hint', use.get('producer_side', '')))))
                 out.append('</details>')
             out.append('<p>待核实：源码/调用绑定、生产部署与兼容性。</p></details>')
+            if candidate.get('behavior_candidates'):
+                out.append(render_behavior(candidate['behavior_candidates']))
         out.append('</article>')
-    if not alerts and not resource_groups and not query_candidates and not external_groups:
+    for group in standalone_behavior:
+        out.append('<article class="card alert">' + render_behavior(group) + '</article>')
+    if not alerts and not resource_groups and not query_candidates and not external_groups and not standalone_behavior:
         out.append('<p>未发现重点候选；不代表没有影响，请检查覆盖缺口。</p>')
     out.append('</section>')
     out.append('<section><h2>最终差异</h2><div class="filters"><input id="query" placeholder="搜索项目、类、工单" oninput="filter()"><select id="project" onchange="filter()"><option value="">全部项目</option>')
@@ -759,6 +804,15 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
                (len(unified_resources['candidates']), len(resource_groups)))
     out.append('</section>')
     out.append('<section><h2>比较范围与覆盖</h2>')
+    out.append('<p>分析覆盖总状态：%s；完整诊断见 <a href="coverage_latest.json">统一覆盖记录</a>。覆盖状态不表示审核通过。</p>' % esc(coverage['status']))
+    for name, stage in coverage['stages'].items():
+        if name != 'report':
+            out.append('<p>阶段 %s：%s</p>' % (esc(name), esc(stage['status'])))
+    out.append('<p>行为分析：%s；%d 项原始候选；详情见 <a href="behavior_impact_latest.json">行为事实</a>。</p>' %
+               (esc({'NOT_EXECUTED': '未执行', 'UNKNOWN': '未知', 'FAILED': '失败', 'PARTIAL': '部分覆盖', 'COMPLETE': '已执行'}.get(behavior['status'], behavior['status'])),
+                len(behavior.get('candidates', []))))
+    for gap in behavior.get('omissions', [])[:20]:
+        out.append('<p class="gap">行为分析缺口：%s</p>' % esc(json.dumps(gap, ensure_ascii=False)))
     versions = {item['project']: item for item in release.get('comparisons', [])}
     for led in release['ledgers']:
         phase = next((p.get('static_scan') for p in release.get('project_phase_status', []) if p['project'] == led['project']), '未知')
@@ -769,7 +823,9 @@ def write_html(root, release, specs, reviews, manifest=None, dependency_scope=No
         if p['source'] in ('登记固定版本', '远端默认分支'):
             out.append('<p>%s：%s %s　固定 SHA %s（仅单一版本，无法判断升级过程或实际部署）</p>' % (esc(p['project']), esc(p['source']), esc(p.get('branch') or ''), esc(p['head'])))
     for gap in sdk['gaps']:
-        out.append('<p class="gap">⚠ ' + esc(gap) + '</p>')
+        location = ' / '.join(str(gap[k]) for k in ('project', 'side', 'path') if gap.get(k))
+        out.append('<p class="gap">⚠ ' + esc((location + '：' if location else '') +
+                   gap.get('detail', gap['reason'])) + '</p>')
     shared_gaps = shared_result.get('omissions', [])
     if shared_gaps:
         out.append('<details><summary>共享资源解析缺口（%d 处）</summary>' % len(shared_gaps))

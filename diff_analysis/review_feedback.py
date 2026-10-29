@@ -252,29 +252,15 @@ def import_basis_checks(run_dir, payload):
 
 def review_status(run_dir):
     root, release = load_batch(run_dir)
+    from .revision_pipeline import update_review_package
+    update_review_package(root)
     state = _state(root)
     latest = {}
     affected = set()
-    for rev in state["group_revisions"]:
-        affected.update(d["id"] for d in state["decisions"]
-                        if d["id"] in rev["decisions_needing_review"] and
-                        d.get("created_at_utc", "") <= rev["created_at_utc"])
-    superseded_goals = state.get("goal_revision_events", [])
     review_package = root / "review_package_latest.json"
     if review_package.is_file():
         package = json.loads(review_package.read_text(encoding="utf-8"))
         affected.update(package.get("decisions_to_revalidate", []))
-    evidence = _load_supplement_state(root)["evidence"]
-    for decision in state["decisions"]:
-        if any(decision.get("expected_goal_id") == event["old_goal_id"]
-               and decision.get("created_at_utc", "") <= event["created_at_utc"]
-               for event in superseded_goals):
-            affected.add(decision["id"])
-        if decision["object_type"] == "QUESTION" and any(
-                event.get("question_id") == decision["object_id"] and
-                event.get("created_at_utc", "") > decision.get("created_at_utc", "")
-                for event in evidence):
-            affected.add(decision["id"])
     for d in state["decisions"]:
         if d["id"] in affected:
             # Applicability is derived, not overwritten in original journal.
@@ -297,6 +283,8 @@ def review_status(run_dir):
                               "dimension": key[2], "ai": a["verdict"],
                               "human": h["verdict"]})
     result = {"schema_version": "review-status-v1",
+              'coverage': json.loads((root / 'coverage_latest.json').read_text('utf-8')),
+              'report_snapshot_notice': 'HTML 是生成时快照，最新覆盖及适用性以本状态为准',
               "decisions_total": len(state["decisions"]),
               "basis_checks_total": len(state["basis_checks"]),
               "current_latest": list(latest.values()),

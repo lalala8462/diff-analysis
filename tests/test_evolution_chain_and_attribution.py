@@ -271,7 +271,8 @@ class MixedCommitTests(unittest.TestCase):
             self.assertEqual(1, release["ledgers"][0]["enrichment"]["mixed_behavior_candidates"])
             text = (folder / "ai_review.md").read_text(encoding="utf-8")
             self.assertIn("POSSIBLE_MIXED_BEHAVIOR", text)
-            self.assertEqual("STATIC_CANDIDATES_ONLY", release["status"])
+            self.assertEqual('PARTIAL_EVIDENCE', release['status'])
+            self.assertEqual('PARTIAL', release['coverage']['status'])
 
 
 if __name__ == "__main__":

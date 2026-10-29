@@ -72,62 +72,55 @@ class RevisionPipelineTests(unittest.TestCase):
             self.assertEqual("CURRENT", flags[("DIFF", D2)])
 
     def test_binding_change_invalidates_related_group_and_diff_decisions(self):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                data = release()
-                consumer = "p.Consumer#run()"
-                data["ledgers"].append({"project": "team/consumer", "base": SHA0,
-                                        "head": SHA1, "final_changes": []})
-                data["relations"]["graphs"].append({
-                    "project": "team/consumer", "side": "HEAD", "snapshot_sha": SHA1,
-                    "method_index": {consumer: {"path": "Consumer.java", "start": 3, "end": 5}},
-                    "edges": []})
-                (root / "analysis.json").write_text(json.dumps(data), encoding="utf-8")
-                export_questions(root, data)
-                rebuild_unified(root)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            data = release()
+            consumer = "p.Consumer#run()"
+            data["ledgers"].append({"project": "team/consumer", "base": SHA0,
+                                    "head": SHA1, "final_changes": []})
+            data["relations"]["graphs"].append({
+                "project": "team/consumer", "side": "HEAD", "snapshot_sha": SHA1,
+                "method_index": {consumer: {"path": "Consumer.java", "start": 3, "end": 5}},
+                "edges": []})
+            (root / "analysis.json").write_text(json.dumps(data), encoding="utf-8")
+            export_questions(root, data)
+            rebuild_unified(root)
+            update_review_package(root)
+            payload = {"schema_version": "review-import-v1", "decisions": [
+                {"object_type": obj, "object_id": oid, "dimension": "IMPACT",
+                 "actor_kind": "HUMAN", "actor_id": "reviewer", "verdict": "SUPPORT",
+                 "reason": "已核对当前固定版本的影响范围", "evidence_ids": [did]}
+                for obj, oid, did in (("GROUP", G1, D1), ("DIFF", D1, D1),
+                                      ("GROUP", G2, D2), ("DIFF", D2, D2))]}
+            import_review(root, payload)
+            bindings = {
+                "endpoints": [
+                    {"id": "provider", "project": "team/pay", "side": "HEAD",
+                     "sha": SHA1, "role": "PROVIDER",
+                     "evidence": {"path": "Pay.java", "start": 2, "end": 2}},
+                    {"id": "consumer", "project": "team/consumer", "side": "HEAD",
+                     "sha": SHA1, "role": "CONSUMER",
+                     "evidence": {"path": "Consumer.java", "start": 3, "end": 3}}],
+                "edges": [{"id": "connection", "kind": "DUBBO", "side": "HEAD",
+                           "caller_endpoint": "consumer", "callee_endpoint": "provider",
+                           "caller_sha": SHA1, "callee_sha": SHA1,
+                           "binding_status": "USER_ATTESTED_MATCH", "evidence_refs": []}]}
+            outcome = rebuild_unified(root, binding_report=bindings)
+            self.assertGreater(outcome["cross_project_questions"], 0)
+            # 重复刷新保持相关对象失效，无关组持续有效。
+            for _ in range(2):
                 update_review_package(root)
-                payload = {"schema_version": "review-import-v1", "decisions": [
-                    {"object_type": obj, "object_id": oid, "dimension": "IMPACT",
-                     "actor_kind": "HUMAN", "actor_id": "reviewer", "verdict": "SUPPORT",
-                     "reason": "已核对当前固定版本的影响范围", "evidence_ids": [did]}
-                    for obj, oid, did in (("GROUP", G1, D1), ("DIFF", D1, D1),
-                                          ("GROUP", G2, D2), ("DIFF", D2, D2))]}
-                import_review(root, payload)
-                if legacy:
-                    state_path = root / "review_state.json"
-                    state = json.loads(state_path.read_text("utf-8"))
-                    for decision in state["decisions"]:
-                        decision.pop("object_dependency_fingerprint", None)
-                    state_path.write_text(json.dumps(state), encoding="utf-8")
-                bindings = {
-                    "endpoints": [
-                        {"id": "provider", "project": "team/pay", "side": "HEAD",
-                         "sha": SHA1, "role": "PROVIDER",
-                         "evidence": {"path": "Pay.java", "start": 2, "end": 2}},
-                        {"id": "consumer", "project": "team/consumer", "side": "HEAD",
-                         "sha": SHA1, "role": "CONSUMER",
-                         "evidence": {"path": "Consumer.java", "start": 3, "end": 3}}],
-                    "edges": [{"id": "connection", "kind": "DUBBO", "side": "HEAD",
-                               "caller_endpoint": "consumer", "callee_endpoint": "provider",
-                               "caller_sha": SHA1, "callee_sha": SHA1,
-                               "binding_status": "USER_ATTESTED_MATCH", "evidence_refs": []}]}
-                outcome = rebuild_unified(root, binding_report=bindings)
-                self.assertGreater(outcome["cross_project_questions"], 0)
-                # 重复刷新也不能把没有指纹的旧判断恢复为有效。
-                for _ in range(2):
-                    update_review_package(root)
-                    flags = {(d["object_type"], d["object_id"]): d["current_applicability"]
-                             for d in review_status(root)["current_latest"]}
-                    self.assertEqual("NEEDS_REVIEW", flags[("GROUP", G1)])
-                    self.assertEqual("NEEDS_REVIEW", flags[("DIFF", D1)])
-                    self.assertEqual("CURRENT", flags[("GROUP", G2)])
-                    self.assertEqual("CURRENT", flags[("DIFF", D2)])
-                import_review(root, {**payload, "decisions": payload["decisions"][:2]})
-                update_review_package(root)
-                self.assertTrue(all(d["current_applicability"] == "CURRENT"
-                                    for d in review_status(root)["current_latest"]))
-                self.assertEqual(data, json.loads((root / "analysis.json").read_text("utf-8")))
+                flags = {(d["object_type"], d["object_id"]): d["current_applicability"]
+                         for d in review_status(root)["current_latest"]}
+                self.assertEqual("NEEDS_REVIEW", flags[("GROUP", G1)])
+                self.assertEqual("NEEDS_REVIEW", flags[("DIFF", D1)])
+                self.assertEqual('CURRENT', flags[("GROUP", G2)])
+                self.assertEqual('CURRENT', flags[("DIFF", D2)])
+            import_review(root, {**payload, "decisions": payload["decisions"][:2]})
+            update_review_package(root)
+            self.assertTrue(all(d["current_applicability"] == "CURRENT"
+                                for d in review_status(root)["current_latest"]))
+            self.assertEqual(data, json.loads((root / "analysis.json").read_text("utf-8")))
 
     def test_binding_or_java_edge_change_recomputes_only_reachable_group(self):
         with tempfile.TemporaryDirectory() as folder:

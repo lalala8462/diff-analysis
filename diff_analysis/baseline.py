@@ -18,7 +18,7 @@ from .scanner import scan_tree, build_graph, ScannerError
 def scanner_fingerprint():
     root = Path(__file__).resolve().parent
     digest = hashlib.sha256()
-    for name in ("scanner.py", "java/JavaAstScanner.java", "gitops.py"):
+    for name in ("scanner.py", "java/JavaAstScanner.java", "java/BehaviorFacts.java", "gitops.py"):
         digest.update((root / name).read_bytes())
     return digest.hexdigest()
 

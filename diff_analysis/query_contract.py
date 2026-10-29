@@ -163,12 +163,6 @@ def projection_details(sql):
     return items, sorted(set(gaps))
 
 
-def projection(sql):
-    """Compatibility wrapper returning only parsed output names and gaps."""
-    items, gaps = projection_details(sql)
-    return sorted(set(item['output'] for item in items)), gaps
-
-
 def _normalize_expression(value):
     return re.sub(r'\s+', '', value or '').replace(chr(96), '').lower()
 

@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from diff_analysis.maven_inventory import analyze
 from diff_analysis.release_analysis import final_diff_ledger
@@ -34,6 +35,12 @@ def commit(repo, path, text):
 
 
 class ContractTests(unittest.TestCase):
+
+    def setUp(self):
+        # 单元测试只使用固定样例，避免发现本机真实架构项目并访问远端。
+        discovery = patch('diff_analysis.maven_inventory.default_projects', return_value=([], []))
+        discovery.start()
+        self.addCleanup(discovery.stop)
     def test_field_annotation_method_enum_and_private_exclusion(self):
         code = '''package a;
 public class Dto {

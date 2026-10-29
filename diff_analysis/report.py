@@ -27,7 +27,8 @@ def markdown(results, cross_candidates=None, meta=None):
              '| 仓库 | 基线 SHA | 目标 SHA | 改动文件 | 改动方法 | 解析/采集状态 |',
              '| --- | --- | --- | ---: | ---: | --- |']
     for r in results:
-        state = '不完整（需人工处理）' if r['incomplete'] else '扫描完成（静态范围）'
+        state = ('扫描完成（静态范围）' if all(s['status'] == 'COMPLETE' for s in r['java_coverage'].values())
+                 else '不完整（需人工处理）')
         lines.append('| %s | %s | %s | %s | %s | %s |' %
                      (code(r['project']), code(r['base'][:12]), code(r['head'][:12]),
                       len(r['changed_files']), len(r['changed_methods']), state))
@@ -93,8 +94,10 @@ def markdown(results, cross_candidates=None, meta=None):
     for r in results:
         lines.append('- %s：新版本未解析的调用点 %s 个，旧版本 %s 个；不可据此断言没有调用关系。' %
                      (code(r['project']), len(r['unresolved']), r['old_unresolved_count']))
-        for w in r['warnings'][:25]:
-            lines.append('  - 扫描警告：%s' % code(w))
+        for side, coverage in r['java_coverage'].items():
+            for diagnostic in coverage['diagnostics'][:25]:
+                lines.append('  - %s 扫描诊断：%s；%s' %
+                             (side, code(diagnostic.get('path', '')), code(diagnostic['reason'])))
     lines += ['- 本阶段仅有 JDK AST 静态语法分析，未完成类路径解析、动态代理、反射、Dubbo/ZK、RabbitMQ、Redis 和数据库字段级血缘采集。',
               '- 仅分析输入 MR/显式附加的仓库；**未输入且未纳管的项目不会自动被发现**。',
               '- 未模拟多个 MR 的最终合并树、未校验跨仓库 API 二进制兼容性；需要人工确认候选版本的组合。',

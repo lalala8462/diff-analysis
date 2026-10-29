@@ -137,8 +137,10 @@ class ReleaseEvidenceTests(unittest.TestCase):
             self.assertIn("旧版", evidence)
             self.assertIn("新版", evidence)
             self.assertIn(change_id, (out / "report.md").read_text("utf-8"))
-            # Even with exact changes, no business conclusion is asserted.
-            self.assertEqual("STATIC_CANDIDATES_ONLY", release["status"])
+            # 固定差异可用，但未提供 Java 扫描事实，批次必须保留覆盖缺口。
+            self.assertEqual('PARTIAL_EVIDENCE', release['status'])
+            coverage = json.loads((out / 'coverage_latest.json').read_text('utf-8'))
+            self.assertEqual('UNKNOWN', coverage['stages']['java']['status'])
 
     def test_offline_report_keeps_all_changes_without_ai_budget_cutoff(self):
         with tempfile.TemporaryDirectory() as tmp:

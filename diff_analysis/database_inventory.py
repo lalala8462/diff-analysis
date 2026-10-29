@@ -14,7 +14,7 @@ from pathlib import Path
 from .gitops import git
 from .source_index import source_snapshot_index
 
-RULES_VERSION = "database-table-v2"
+RULES_VERSION = "database-table-v3"
 MAX_FILE_BYTES = 500_000
 MAX_SNAPSHOT_BYTES = 20_000_000
 MAX_SNAPSHOT_FILES = 4000
@@ -57,9 +57,8 @@ def _line(text, offset):
 
 def _sql_uses(fragment, path, full_text, absolute_start, method, ds_hint=None):
     result = []
-    # Mask quoted SQL literals as well as comments; FROM/UPDATE inside a
-    # string value is not a table reference.
-    masked = re.sub(r"'(?:''|[^'])*'|/\\*[\\s\\S]*?\\*/|--[^\\n]*",
+    # 屏蔽 SQL 字符串及注释，避免把示例里的表名当成实际访问。
+    masked = re.sub(r"'(?:''|[^'])*'|/\*[\s\S]*?\*/|--[^\n]*",
                     _blank, fragment)
     for found in SQL_TABLE.finditer(masked):
         table = _normalize(found.group(2))

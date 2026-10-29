@@ -60,7 +60,10 @@ class ASTTests(unittest.TestCase):
             head = git('rev-parse', 'HEAD')
             review = review_repo(repo, 'demo', base, head, Path(d)/'work', Path(d)/'cache')
             self.assertIn('demo.Pay#action()', review['changed_methods'])
-            self.assertIn('demo.Pay#caller()', review['impact_paths'])
+            self.assertIn('demo.Pay#caller()', review['new_impact_paths'])
+            self.assertNotIn('impact_paths', review)
+            self.assertNotIn('warnings', review)
+            self.assertNotIn('incomplete', review)
             self.assertIn('静态调用链', markdown([review]))
 
     def test_api_detection(self):
@@ -97,7 +100,7 @@ class ASTTests(unittest.TestCase):
             head = git('rev-parse', 'HEAD')
             result = review_repo(repo, 'demo', base, head, root / 'work', root / 'cache')
             self.assertEqual(['P#a()', 'P#b()'], result['old_impact_paths']['P#b()'])
-            self.assertNotIn('P#c()', result['impact_paths'])
+            self.assertNotIn('P#c()', result['old_impact_paths'])
             report = markdown([result], meta={'demo': {
                 'url': 'https://gitlab.example.com/demo/-/merge_requests/1', 'head': head}})
             self.assertIn('BASE', report)

@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict, deque
+from .scanner import compatible_source_scope
 
 
 def stable_id(prefix, *parts):
@@ -56,6 +57,8 @@ def side_graph(review, side, max_edges=100000):
         else:
             candidates = []
             resolution, strength = "TYPE_UNKNOWN", "BINDING_UNCONFIRMED"
+        candidates = [symbol for symbol in candidates
+                      if compatible_source_scope(methods[owner], methods[symbol])]
         if len(candidates) != 1:
             unresolved.append({**call, "side": side, "reason": (
                 "AMBIGUOUS_CALL" if candidates else
@@ -96,7 +99,7 @@ def side_graph(review, side, max_edges=100000):
                          "unresolved": len(unresolved),
                          "truncated": limit,
                          "omitted_edges": max(0, len(calls) - len(edges) - len(unresolved)),
-                         "graph_complete": not (limit or review.get("incomplete"))}}
+                         "graph_complete": not limit and review['java_coverage'][side]['status'] == 'COMPLETE'}}
 
 
 def propagate_impacts(graph, sources, max_states=200000):

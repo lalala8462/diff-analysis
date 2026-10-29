@@ -9,7 +9,7 @@ from pathlib import Path
 from .gitlab import get_mr, clone_mr, GitLabError
 from .gitops import GitError, check_sha, files_at
 from .review import review_repo, stitch_cross_project
-from .scanner import ScannerError, scan_tree, build_graph
+from .scanner import ScannerError, scan_tree, scan_coverage, build_graph
 from .catalog import BaselineError, validate_project
 from . import baseline_cli
 from . import wizard
@@ -37,11 +37,12 @@ def catalog_result(repo, sha, root, cache):
     return {'project': Path(repo).name, 'head': sha, 'base': sha,
             'changed_files': [], 'changed_methods': [], 'methods': methods,
             'old_methods': methods, 'calls': calls, 'old_calls': calls,
-            'impact_paths': {},
+            'old_impact_paths': {}, 'new_impact_paths': {},
+            'java_coverage': {side: {**scan_coverage(root, methods, errors, skips), 'sha': sha}
+                              for side in ('BASE', 'HEAD')},
             'unresolved': unresolved, 'old_unresolved': unresolved,
             'old_unresolved_count': len(unresolved),
-            'api_issues': [], 'warnings': skips + [e['path'] for e in errors],
-            'incomplete': bool(skips or errors), 'catalog': True}
+            'api_issues': [], 'catalog': True}
 
 
 def parser():

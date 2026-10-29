@@ -153,4 +153,6 @@ def collect_semantic_evidence(run_dir, request, repos,
     _write_json(root / "supplement_state.json", state)
     refresh_evidence_manifest(root, state)
     _write_json(folder / ("round-%03d.json" % state["rounds"]), result)
+    from .revision_pipeline import update_review_package
+    update_review_package(root)
     return result
